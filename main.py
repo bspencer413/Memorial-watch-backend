@@ -183,6 +183,10 @@ async def register(user: UserCreate):
 async def login(user: UserLogin):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = ?", (user.email,))
+       c.execute("SELECT id, password_hash FROM users WHERE email = ?", (user.email,))
         result = c.fetchone()
+        
         if not result or not verify_password(user.password, result['password_hash']):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        access_token = create_access_token(data={"sub": result['id']})
