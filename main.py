@@ -185,5 +185,4 @@ async def login(user: UserLogin):
         c = conn.cursor()
         c.execute("SELECT id, password_hash FROM users WHERE email = ?", (user.email,))
         result = c.fetchone()
-        
-        if not result or not verify_password(user.password, result['password_hash
+        if not result or not verify_password(user.password, result['password_hash']):
