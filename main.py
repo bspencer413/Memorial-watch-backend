@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import jwt
 import bcrypt
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import os
 import feedparser
 import schedule
 import threading
@@ -24,21 +26,21 @@ OBITUARY_FEEDS = [
     "https://obittree.com/obituaries/feed/",
 ]
 
-DB_NAME = "memorial_watch.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     
     c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS watchlist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         location TEXT,
@@ -49,7 +51,7 @@ def init_db():
     )''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS obituaries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
         age INTEGER,
         location TEXT,
@@ -60,12 +62,12 @@ def init_db():
     )''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
         watchlist_id INTEGER NOT NULL,
         obituary_id INTEGER NOT NULL,
         message TEXT NOT NULL,
-        sent BOOLEAN DEFAULT 0,
+        sent BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id),
         FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
@@ -77,8 +79,8 @@ def init_db():
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
     try:
         yield conn
     finally:
@@ -165,16 +167,16 @@ async def register(user: UserCreate):
     with get_db() as conn:
         c = conn.cursor()
         
-        c.execute("SELECT id FROM users WHERE email = ?", (user.email,))
+        c.execute("SELECT id FROM users WHERE email = %s", (user.email,))
         if c.fetchone():
             raise HTTPException(status_code=400, detail="Email already registered")
         
         password_hash = hash_password(user.password)
-        c.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)",
+        c.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
                   (user.email, password_hash))
         conn.commit()
         
-        user_id = c.lastrowid
+        user_id = c.fetchone()[0]
         access_token = create_access_token(data={"sub": user_id})
         
         return {"access_token": access_token, "token_type": "bearer"}
@@ -183,13 +185,13 @@ async def register(user: UserCreate):
 async def login(user: UserLogin):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = ?", (user.email,))
+        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
         result = c.fetchone()
         
-        if not result or not verify_password(user.password, result['password_hash']):
+        if not result or not verify_password(user.password, result[1]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        access_token = create_access_token(data={"sub": result['id']})
+        access_token = create_access_token(data={"sub": result[0]})
         return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/watchlist", response_model=List[WatchlistResponse])
@@ -199,19 +201,19 @@ async def get_watchlist(user_id: int = Depends(get_current_user)):
         c.execute("""
             SELECT id, name, location, dob, status, created_at 
             FROM watchlist 
-            WHERE user_id = ? AND status = 'active'
+            WHERE user_id = %s AND status = 'active'
             ORDER BY created_at DESC
         """, (user_id,))
         
         items = []
         for row in c.fetchall():
             items.append({
-                "id": row['id'],
-                "name": row['name'],
-                "location": row['location'],
-                "dob": row['dob'],
-                "status": row['status'],
-                "created_at": row['created_at']
+                "id": row[0],
+                "name": row[1],
+                "location": row[2],
+                "dob": row[3],
+                "status": row[4],
+                "created_at": str(row[5])
             })
         
         return items
@@ -222,17 +224,18 @@ async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_curre
         c = conn.cursor()
         c.execute("""
             INSERT INTO watchlist (user_id, name, location, dob)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s) RETURNING id
         """, (user_id, item.name, item.location, item.dob))
         conn.commit()
         
-        return {"message": "Added to watchlist", "id": c.lastrowid}
+        item_id = c.fetchone()[0]
+        return {"message": "Added to watchlist", "id": item_id}
 
 @app.delete("/watchlist/{item_id}")
 async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("UPDATE watchlist SET status = 'deleted' WHERE id = ? AND user_id = ?",
+        c.execute("UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
                   (item_id, user_id))
         conn.commit()
         
@@ -246,11 +249,11 @@ async def search_obituaries(search: ObituarySearch):
     with get_db() as conn:
         c = conn.cursor()
         
-        query = "SELECT * FROM obituaries WHERE name LIKE ?"
+        query = "SELECT * FROM obituaries WHERE name LIKE %s"
         params = [f"%{search.name}%"]
         
         if search.location:
-            query += " AND location LIKE ?"
+            query += " AND location LIKE %s"
             params.append(f"%{search.location}%")
         
         query += " ORDER BY scraped_at DESC LIMIT 20"
@@ -259,22 +262,22 @@ async def search_obituaries(search: ObituarySearch):
         
         results = []
         for row in c.fetchall():
-            confidence = calculate_confidence(search.name, row['name'], search.location, row['location'])
+            confidence = calculate_confidence(search.name, row[1], search.location, row[3])
             
             results.append({
-                "id": row['id'],
-                "name": row['name'],
-                "age": row['age'],
-                "location": row['location'],
-                "date": row['date'],
-                "source": row['source'],
-                "link": row['link'],
+                "id": row[0],
+                "name": row[1],
+                "age": row[2],
+                "location": row[3],
+                "date": row[4],
+                "source": row[5],
+                "link": row[6],
                 "confidence": confidence
             })
         
         return results
 
-def calculate_confidence(search_name: str, found_name: str, 
+def calculate_confidence(search_name: str, found_name: str,
                         search_loc: Optional[str], found_loc: Optional[str]) -> str:
     search_name = search_name.lower()
     found_name = found_name.lower()
@@ -308,7 +311,7 @@ def scrape_obituaries():
                     if not name:
                         continue
                     
-                    c.execute("SELECT id FROM obituaries WHERE link = ?", (link,))
+                    c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
                     if c.fetchone():
                         continue
                     
@@ -317,7 +320,7 @@ def scrape_obituaries():
                     
                     c.execute("""
                         INSERT INTO obituaries (name, age, location, date, source, link)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                     """, (name, age, location, published, feed_url, link))
                 
                 conn.commit()
@@ -359,12 +362,12 @@ def check_watchlist_matches():
         watchlist_items = c.fetchall()
         
         for watch in watchlist_items:
-            query = "SELECT * FROM obituaries WHERE name LIKE ?"
-            params = [f"%{watch['name']}%"]
+            query = "SELECT * FROM obituaries WHERE name LIKE %s"
+            params = [f"%{watch[2]}%"]
             
-            if watch['location']:
-                query += " AND location LIKE ?"
-                params.append(f"%{watch['location']}%")
+            if watch[3]:
+                query += " AND location LIKE %s"
+                params.append(f"%{watch[3]}%")
             
             c.execute(query, params)
             matches = c.fetchall()
@@ -372,17 +375,17 @@ def check_watchlist_matches():
             for obit in matches:
                 c.execute("""
                     SELECT id FROM notifications 
-                    WHERE watchlist_id = ? AND obituary_id = ?
-                """, (watch['id'], obit['id']))
+                    WHERE watchlist_id = %s AND obituary_id = %s
+                """, (watch[0], obit[0]))
                 
                 if not c.fetchone():
-                    message = f"Possible match found: {obit['name']} in {obit['location'] or 'unknown location'}"
+                    message = f"Possible match found: {obit[1]} in {obit[3] or 'unknown location'}"
                     c.execute("""
                         INSERT INTO notifications (user_id, watchlist_id, obituary_id, message)
-                        VALUES (?, ?, ?, ?)
-                    """, (watch['user_id'], watch['id'], obit['id'], message))
+                        VALUES (%s, %s, %s, %s)
+                    """, (watch[1], watch[0], obit[0], message))
                     
-                    print(f"Created notification for user {watch['user_id']}: {message}")
+                    print(f"Created notification for user {watch[1]}: {message}")
         
         conn.commit()
 
@@ -395,7 +398,7 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
             FROM notifications n
             JOIN watchlist w ON n.watchlist_id = w.id
             JOIN obituaries o ON n.obituary_id = o.id
-            WHERE n.user_id = ?
+            WHERE n.user_id = %s
             ORDER BY n.created_at DESC
             LIMIT 50
         """, (user_id,))
@@ -403,11 +406,11 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
         notifications = []
         for row in c.fetchall():
             notifications.append({
-                "id": row['id'],
-                "name": row['name'],
-                "message": row['message'],
-                "created_at": row['created_at'],
-                "link": row['link']
+                "id": row[0],
+                "name": row[3],
+                "message": row[1],
+                "created_at": str(row[2]),
+                "link": row[4]
             })
         
         return notifications
@@ -441,3 +444,4 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
