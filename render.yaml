@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: Memorial-watch-backend-2
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://memorial_watch_db_user:9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR@dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com/memorial_watch_db
