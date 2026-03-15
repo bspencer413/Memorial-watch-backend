@@ -28,8 +28,6 @@ OBITUARY_FEEDS = [
     "https://www.tributes.com/rss/obituaries",
 ]
 
-]
-
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
 DB_USER = "memorial_watch_db_user"
 DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
