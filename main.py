@@ -30,7 +30,11 @@ OBITUARY_FEEDS = [
 
 ]
 
-DATABASE_URL = "postgresql://memorial_watch_db_user:9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR@dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com/memorial_watch_db"
+DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
+DB_USER = "memorial_watch_db_user"
+DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
+DB_NAME = "memorial_watch_db"
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
 
 
 def init_db():
