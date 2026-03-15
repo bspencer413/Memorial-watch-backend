@@ -26,7 +26,8 @@ OBITUARY_FEEDS = [
     "https://obittree.com/obituaries/feed/",
 ]
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = "postgresql://memorial_watch_db_user:9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR@dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com/memorial_watch_db"
+
 
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
