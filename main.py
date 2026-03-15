@@ -22,8 +22,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
 
 OBITUARY_FEEDS = [
-    "https://www.legacy.com/obituaries/rss/",
-    "https://obittree.com/obituaries/feed/",
+    "https://www.legacy.com/rss/recent-obituaries/",
+    "https://obits.nj.com/rss/obituaries",
+    "https://obits.masslive.com/rss/obituaries",
+    "https://www.tributes.com/rss/obituaries",
+]
+
 ]
 
 DATABASE_URL = "postgresql://memorial_watch_db_user:9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR@dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com/memorial_watch_db"
