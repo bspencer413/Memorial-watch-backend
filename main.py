@@ -313,6 +313,8 @@ def scrape_obituaries():
                     title = entry.get('title', '')
                     link = entry.get('link', '')
                     published = entry.get('published', '')
+                    print(f"Feed has {len(feed.entries)} entries")
+                    for entry in feed.entries[:50]:
                     
                     name = extract_name_from_title(title)
                     if not name:
@@ -339,14 +341,15 @@ def scrape_obituaries():
         check_watchlist_matches()
 
 def extract_name_from_title(title: str) -> Optional[str]:
-    title = re.sub(r'\b(obituary|dies|passed|age|aged)\b', '', title, flags=re.IGNORECASE)
-    title = re.sub(r'\d+', '', title)
-    title = re.sub(r'[,\-\|]', ' ', title).strip()
-    
+    if not title or len(title) < 3:
+        return None
+    # Just clean up basic punctuation
+    title = title.strip()
+    title = re.sub(r'\s+', ' ', title)
     if len(title) > 3 and len(title) < 100:
         return title
     return None
-
+    
 def extract_age(text: str) -> Optional[int]:
     match = re.search(r'\b(\d{1,3})\b', text)
     if match:
