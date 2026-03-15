@@ -180,10 +180,10 @@ async def register(user: UserCreate):
         
         password_hash = hash_password(user.password)
         c.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-                  (user.email, password_hash))
-        conn.commit()
-        
+          (user.email, password_hash))
+
         user_id = c.fetchone()[0]
+        conn.commit()
         access_token = create_access_token(data={"sub": user_id})
         
         return {"access_token": access_token, "token_type": "bearer"}
