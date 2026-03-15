@@ -308,13 +308,12 @@ def scrape_obituaries():
         for feed_url in OBITUARY_FEEDS:
             try:
                 feed = feedparser.parse(feed_url)
-                
+                print(f"Feed has {len(feed.entries)} entries")
                 for entry in feed.entries[:50]:
                     title = entry.get('title', '')
                     link = entry.get('link', '')
                     published = entry.get('published', '')
-                    print(f"Feed has {len(feed.entries)} entries")
-                    for entry in feed.entries[:50]:
+                
                     
                     name = extract_name_from_title(title)
                     if not name:
