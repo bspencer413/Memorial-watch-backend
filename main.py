@@ -71,6 +71,11 @@ OBITUARY_FEEDS = [
     "https://obits.denverpost.com/rss/obituaries",
     "https://obits.sltrib.com/rss/obituaries",
 
+    # Hawaii & Pacific
+    "https://obits.staradvertiser.com/rss/obituaries",
+    "https://obits.mauinews.com/rss/obituaries",
+    "https://obits.hawaiitribune-herald.com/rss/obituaries",
+
 ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
