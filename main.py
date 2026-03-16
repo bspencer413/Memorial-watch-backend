@@ -22,10 +22,55 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
 
 OBITUARY_FEEDS = [
+    
+    # National
     "https://www.legacy.com/rss/recent-obituaries/",
+    "https://www.tributes.com/rss/obituaries",
+    
+    # Northeast
     "https://obits.nj.com/rss/obituaries",
     "https://obits.masslive.com/rss/obituaries",
-    "https://www.tributes.com/rss/obituaries",
+    "https://obits.pennlive.com/rss/obituaries",
+    "https://obits.lehighvalleylive.com/rss/obituaries",
+    "https://obits.silive.com/rss/obituaries",
+    "https://obits.newyorkupstate.com/rss/obituaries",
+    "https://obits.syracuse.com/rss/obituaries",
+    "https://obits.cleveland.com/rss/obituaries",
+    "https://obits.mlive.com/rss/obituaries",
+    
+    # Southeast
+    "https://obits.al.com/rss/obituaries",
+    "https://obits.nola.com/rss/obituaries",
+    "https://obits.tennessean.com/rss/obituaries",
+    "https://obits.charlotteobserver.com/rss/obituaries",
+    "https://obits.thestate.com/rss/obituaries",
+    "https://obits.miamiherald.com/rss/obituaries",
+    "https://obits.orlandosentinel.com/rss/obituaries",
+    
+    # Midwest
+    "https://obits.chicagotribune.com/rss/obituaries",
+    "https://obits.freep.com/rss/obituaries",
+    "https://obits.startribune.com/rss/obituaries",
+    "https://obits.indystar.com/rss/obituaries",
+    "https://obits.omaha.com/rss/obituaries",
+    "https://obits.stltoday.com/rss/obituaries",
+    "https://obits.kansascity.com/rss/obituaries",
+    
+    # Southwest
+    "https://obits.azcentral.com/rss/obituaries",
+    "https://obits.dallasnews.com/rss/obituaries",
+    "https://obits.houstonchronicle.com/rss/obituaries",
+    "https://obits.lcsun-news.com/rss/obituaries",
+    
+    # West
+    "https://obits.oregonlive.com/rss/obituaries",
+    "https://obits.sacbee.com/rss/obituaries",
+    "https://obits.latimes.com/rss/obituaries",
+    "https://obits.mercurynews.com/rss/obituaries",
+    "https://obits.seattletimes.com/rss/obituaries",
+    "https://obits.denverpost.com/rss/obituaries",
+    "https://obits.sltrib.com/rss/obituaries",
+
 ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
