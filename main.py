@@ -21,46 +21,46 @@ SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
 
-# Working Legacy.com newspaper-specific RSS feeds
+# Legacy.com newspaper RSS feeds — recentdate=30 pulls 30 days of obituaries
 OBITUARY_FEEDS = [
     # Northeast
-    "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/philly/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/washingtonpost/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/baltimoresun/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/courant/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/pressherald/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/philly/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/washingtonpost/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/baltimoresun/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/courant/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/pressherald/services/rss.ashx?recentdate=30",
     # Southeast
-    "https://www.legacy.com/obituaries/orlandosentinel/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/charlotteobserver/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/ajc/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/tennessean/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/nola/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/orlandosentinel/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/charlotteobserver/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/ajc/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/tennessean/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/nola/services/rss.ashx?recentdate=30",
     # Midwest
-    "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/indystar/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/kansascity/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/cleveland/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/indystar/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/kansascity/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/cleveland/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=30",
     # Southwest
-    "https://www.legacy.com/obituaries/azcentral/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/azcentral/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=30",
     # West
-    "https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/seattletimes/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/denverpost/services/rss.ashx?recentdate=3",
-    "https://www.legacy.com/obituaries/sltrib/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/seattletimes/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/denverpost/services/rss.ashx?recentdate=30",
+    "https://www.legacy.com/obituaries/sltrib/services/rss.ashx?recentdate=30",
     # Hawaii
-    "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=30",
 ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
@@ -95,11 +95,13 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS obituaries (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
+        name_normalized TEXT,
         age INTEGER,
         location TEXT,
         date TEXT,
         source TEXT,
         link TEXT,
+        obit_text TEXT,
         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
 
@@ -130,6 +132,8 @@ def init_db():
 
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name
         ON obituaries (name)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized
+        ON obituaries (name_normalized)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name
         ON death_records (last_name)''')
 
@@ -145,6 +149,19 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+def normalize_name(name: str) -> str:
+    """Convert 'Last, First' to 'First Last' and title case"""
+    if not name:
+        return name
+    name = name.strip()
+    if ',' in name:
+        parts = name.split(',', 1)
+        name = f"{parts[1].strip()} {parts[0].strip()}"
+    # Fix apostrophe capitalization (O'Connor, etc.)
+    name = re.sub(r"\b\w+'\w+\b", lambda m: m.group(0).title(), name)
+    return name.title()
 
 
 class UserCreate(BaseModel):
@@ -185,10 +202,11 @@ class ObituaryResult(BaseModel):
     date: Optional[str]
     source: str
     link: Optional[str]
+    obit_text: Optional[str]
     confidence: str
 
 
-app = FastAPI(title="Memorial Watch API", version="1.1.0")
+app = FastAPI(title="Memory Watch API", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -234,7 +252,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.1.0"
+        "version": "1.2.0"
     }
 
 @app.get("/admin/stats")
@@ -245,15 +263,17 @@ async def get_stats():
         obit_count = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM death_records")
         death_count = c.fetchone()[0]
-        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
+        c.execute("""SELECT name, date, source FROM obituaries
+            ORDER BY scraped_at DESC LIMIT 5""")
         recent = c.fetchall()
         return {
             "obituaries": obit_count,
             "death_records": death_count,
-            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent]
+            "most_recent": [{"name": r[0], "date": r[1],
+                "source": r[2]} for r in recent]
         }
 
-@app.post("/admin/scrape-now")
+@app.get("/admin/scrape-now")
 async def scrape_now():
     threading.Thread(target=scrape_obituaries, daemon=True).start()
     return {"message": "Scrape started — check /admin/stats in 60 seconds"}
@@ -269,8 +289,9 @@ async def register(user: UserCreate):
         if c.fetchone():
             raise HTTPException(status_code=400, detail="Email already registered")
         password_hash = hash_password(user.password)
-        c.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-                  (user.email, password_hash))
+        c.execute(
+            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+            (user.email, password_hash))
         user_id = c.fetchone()[0]
         conn.commit()
         access_token = create_access_token(data={"sub": user_id})
@@ -280,7 +301,8 @@ async def register(user: UserCreate):
 async def login(user: UserLogin):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
+        c.execute("SELECT id, password_hash FROM users WHERE email = %s",
+            (user.email,))
         result = c.fetchone()
         if not result or not verify_password(user.password, result[1]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -322,7 +344,8 @@ async def get_watchlist(user_id: int = Depends(get_current_user)):
         return items
 
 @app.post("/watchlist")
-async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_current_user)):
+async def add_to_watchlist(item: WatchlistItem,
+        user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
@@ -334,11 +357,13 @@ async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_curre
         return {"message": "Added to watchlist", "id": item_id}
 
 @app.delete("/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
+async def remove_from_watchlist(item_id: int,
+        user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
-                  (item_id, user_id))
+        c.execute(
+            "UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
+            (item_id, user_id))
         conn.commit()
         if c.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found")
@@ -352,9 +377,13 @@ async def search_obituaries(search: ObituarySearch):
     with get_db() as conn:
         c = conn.cursor()
         results = []
+        search_normalized = normalize_name(search.name)
 
-        query = "SELECT * FROM obituaries WHERE name ILIKE %s"
-        params = [f"%{search.name}%"]
+        # Search both original and normalized name
+        query = """SELECT * FROM obituaries WHERE
+            name ILIKE %s OR name_normalized ILIKE %s"""
+        params = [f"%{search.name}%", f"%{search_normalized}%"]
+
         if search.location:
             query += " AND location ILIKE %s"
             params.append(f"%{search.location}%")
@@ -368,9 +397,14 @@ async def search_obituaries(search: ObituarySearch):
             confidence = calculate_confidence(
                 search.name, row[1], search.location, row[3])
             results.append({
-                "id": row[0], "name": row[1], "age": row[2],
-                "location": row[3], "date": row[4],
-                "source": row[5], "link": row[6],
+                "id": row[0],
+                "name": row[1],
+                "age": row[2],
+                "location": row[3],
+                "date": row[4],
+                "source": "Legacy",
+                "link": row[6],
+                "obit_text": row[7] if len(row) > 7 else None,
                 "confidence": confidence
             })
         return results
@@ -427,27 +461,33 @@ def scrape_obituaries():
                     title = entry.get('title', '').strip()
                     link = entry.get('link', '')
                     published = entry.get('published', '')
+                    # Get full obituary text from RSS description
+                    obit_text = entry.get('summary', '') or entry.get('description', '')
+                    # Strip HTML tags from obit text
+                    obit_text = re.sub(r'<[^>]+>', '', obit_text).strip()
 
                     if not title or len(title) < 3:
                         continue
 
                     # Check for duplicate by link
                     if link:
-                        c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
+                        c.execute("SELECT id FROM obituaries WHERE link = %s",
+                            (link,))
                         if c.fetchone():
                             continue
 
-                    name = extract_name_from_title(title)
-                    if not name:
-                        continue
-
+                    # Normalize name — convert "Last, First" to "First Last"
+                    name_normalized = normalize_name(title)
                     age = extract_age(title)
                     location = extract_location(title)
 
                     c.execute("""
-                        INSERT INTO obituaries (name, age, location, date, source, link)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (name, age, location, published, feed_url, link))
+                        INSERT INTO obituaries
+                        (name, name_normalized, age, location, date,
+                         source, link, obit_text)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (title, name_normalized, age, location,
+                          published, feed_url, link, obit_text))
                     count += 1
 
                 conn.commit()
@@ -461,12 +501,6 @@ def scrape_obituaries():
     check_watchlist_matches()
 
 
-def extract_name_from_title(title: str) -> Optional[str]:
-    if not title or len(title) < 3 or len(title) > 100:
-        return None
-    title = re.sub(r'\s+', ' ', title).strip()
-    return title
-
 def extract_age(text: str) -> Optional[int]:
     match = re.search(r'\b(\d{1,3})\b', text)
     if match:
@@ -476,7 +510,8 @@ def extract_age(text: str) -> Optional[int]:
     return None
 
 def extract_location(text: str) -> Optional[str]:
-    match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
+    match = re.search(
+        r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
     if match:
         return match.group(1)
     return None
@@ -487,8 +522,11 @@ def check_watchlist_matches():
         c.execute("SELECT * FROM watchlist WHERE status = 'active'")
         watchlist_items = c.fetchall()
         for watch in watchlist_items:
-            c.execute("SELECT * FROM obituaries WHERE name ILIKE %s",
-                      (f"%{watch[2]}%",))
+            watch_name = watch[2]
+            watch_normalized = normalize_name(watch_name)
+            c.execute("""SELECT * FROM obituaries WHERE
+                name ILIKE %s OR name_normalized ILIKE %s""",
+                (f"%{watch_name}%", f"%{watch_normalized}%"))
             matches = c.fetchall()
             for obit in matches:
                 c.execute("""
