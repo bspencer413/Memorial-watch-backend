@@ -99,7 +99,7 @@ def init_db():
         location TEXT,
         date TEXT,
         source TEXT,
-        link TEXT UNIQUE,
+        link TEXT,
         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
 
@@ -128,10 +128,10 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
 
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name
-        ON death_records (last_name)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name
         ON obituaries (name)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name
+        ON death_records (last_name)''')
 
     conn.commit()
     conn.close()
@@ -427,31 +427,38 @@ def scrape_obituaries():
                     title = entry.get('title', '').strip()
                     link = entry.get('link', '')
                     published = entry.get('published', '')
+
                     if not title or len(title) < 3:
                         continue
-                    # Skip duplicate links
+
+                    # Check for duplicate by link
                     if link:
                         c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
                         if c.fetchone():
                             continue
+
                     name = extract_name_from_title(title)
                     if not name:
                         continue
+
                     age = extract_age(title)
                     location = extract_location(title)
+
                     c.execute("""
                         INSERT INTO obituaries (name, age, location, date, source, link)
                         VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (link) DO NOTHING
                     """, (name, age, location, published, feed_url, link))
                     count += 1
+
                 conn.commit()
                 total += count
                 print(f"  {feed_url}: {count} new entries")
+
             except Exception as e:
                 print(f"  ERROR {feed_url}: {e}")
-        print(f"[{datetime.now()}] Scrape complete. {total} new obituaries added.")
-        check_watchlist_matches()
+
+    print(f"[{datetime.now()}] Scrape complete. {total} new obituaries added.")
+    check_watchlist_matches()
 
 
 def extract_name_from_title(title: str) -> Optional[str]:
