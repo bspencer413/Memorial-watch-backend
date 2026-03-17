@@ -620,6 +620,29 @@ def run_scheduler():
 
 
 # ── STARTUP ───────────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.1.0"
+    }
+
+@app.get("/admin/stats")
+async def get_stats():
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM obituaries")
+        obit_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM death_records")
+        death_count = c.fetchone()[0]
+        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
+        recent = c.fetchall()
+        return {
+            "obituaries": obit_count,
+            "death_records": death_count,
+            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent]
+        }
 
 @app.on_event("startup")
 async def startup_event():
