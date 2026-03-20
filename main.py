@@ -487,34 +487,7 @@ async def search_obituaries(search: ObituarySearch):
                 "confidence": confidence
             })
 
-        # If no database results, fall back to real-time Legacy search
-        if not results:
-            try:
-                live_results = await search_legacy_live(search.name, search.location)
-                # Save live results to database for future searches
-                for item in live_results:
-                    name_normalized = normalize_name(item["name"])
-                    try:
-                        c.execute("""
-                            INSERT INTO obituaries
-                            (name, name_normalized, age, location, date,
-                             source, link, obit_text)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT DO NOTHING
-                        """, (item["name"], name_normalized, item.get("age"),
-                              item.get("location"), item.get("date"),
-                              item.get("source"), item.get("link"),
-                              item.get("obit_text")))
-                    except Exception:
-                        pass
-                try:
-                    conn.commit()
-                except Exception:
-                    pass
-                results.extend(live_results)
-            except Exception as e:
-                print(f"Live search failed: {e}")
-
+               # Live search disabled pending optimization
         return results
 
 
