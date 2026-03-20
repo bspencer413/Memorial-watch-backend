@@ -490,6 +490,17 @@ async def search_obituaries(search: ObituarySearch):
                # Live search disabled pending optimization
         return results
 
+def calculate_confidence(search_name, found_name, search_loc, found_loc):
+    search_name = search_name.lower()
+    found_name = found_name.lower()
+    if search_name == found_name:
+        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
+            return "high"
+        return "medium"
+    if search_name in found_name or found_name in search_name:
+        return "medium"
+    return "low"
+
 
 # ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
