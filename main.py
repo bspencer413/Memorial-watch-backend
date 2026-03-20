@@ -520,27 +520,80 @@ async def search_obituaries(search: ObituarySearch):
 
 # ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
-@app.get("/notifications")
-async def get_notifications(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT n.id, n.message, n.created_at, w.name, o.link
-            FROM notifications n
-            JOIN watchlist w ON n.watchlist_id = w.id
-            JOIN obituaries o ON n.obituary_id = o.id
-            WHERE n.user_id = %s
-            ORDER BY n.created_at DESC LIMIT 50
-        """, (user_id,))
-        notifications = []
-        for row in c.fetchall():
-            notifications.append({
-                "id": row[0], "name": row[3],
-                "message": row[1], "created_at": str(row[2]),
-                "link": row[4]
-            })
-        return notifications
+async def search_legacy_live(name: str, location: str = None):
+    """Search Legacy RSS feeds in real time when database has no results"""
+    import aiohttp
+    
+    results = []
+    name_parts = name.strip().lower().split()
+    if len(name_parts) < 2:
+        return results
 
+    # Search a subset of high-volume feeds with longer date range
+    live_feeds = [
+        "https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/washingtonpost/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/seattletimes/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/philly/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/ajc/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/denverpost/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/cleveland/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/tampabay/services/rss.ashx?recentdate=365",
+        "https://www.legacy.com/obituaries/baltimoresun/services/rss.ashx?recentdate=365",
+    ]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            for feed_url in live_feeds:
+                try:
+                    async with session.get(feed_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                        if resp.status == 200:
+                            content = await resp.text()
+                            feed = feedparser.parse(content)
+                            for entry in feed.entries:
+                                title = entry.get('title', '').strip()
+                                title_lower = title.lower()
+                                # Check if all name parts appear in the title
+                                if all(part in title_lower for part in name_parts):
+                                    link = entry.get('link', '')
+                                    published = entry.get('published', '')
+                                    obit_text = entry.get('summary', '') or entry.get('description', '')
+                                    obit_text = re.sub(r'<[^>]+>', '', obit_text).strip()
+                                    name_normalized = normalize_name(title)
+                                    loc = extract_location(title)
+                                    age = extract_age(title)
+                                    results.append({
+                                        "id": -(len(results) + 1),
+                                        "name": name_normalized,
+                                        "age": age,
+                                        "location": loc,
+                                        "date": published,
+                                        "source": "Legacy (live)",
+                                        "link": link,
+                                        "obit_text": obit_text,
+                                        "confidence": calculate_confidence(
+                                            name, name_normalized, location, loc)
+                                    })
+                                    if len(results) >= 10:
+                                        return results
+                except Exception as e:
+                    print(f"Live feed error {feed_url}: {e}")
+                    continue
+    except Exception as e:
+        print(f"Live search session error: {e}")
+
+    return results
 
 # ── SCRAPER ───────────────────────────────────────────────────────────────────
 
