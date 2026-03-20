@@ -206,6 +206,10 @@ def init_db():
 
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name
         ON obituaries (name)''')
+    c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized
+    ON obituaries (name_normalized)''')
+
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized
         ON obituaries (name_normalized)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name
