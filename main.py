@@ -458,7 +458,7 @@ async def search_obituaries(search: ObituarySearch):
         results = []
         search_normalized = normalize_name(search.name)
 
-        # Search both original and normalized name
+        # Search both original and normalized name in database
         query = """SELECT * FROM obituaries WHERE
             name ILIKE %s OR name_normalized ILIKE %s"""
         params = [f"%{search.name}%", f"%{search_normalized}%"]
@@ -486,19 +486,96 @@ async def search_obituaries(search: ObituarySearch):
                 "obit_text": row[7] if len(row) > 7 else None,
                 "confidence": confidence
             })
+
+        # If no database results, fall back to real-time Legacy search
+        if not results:
+            try:
+                live_results = await search_legacy_live(search.name, search.location)
+                # Save live results to database for future searches
+                for item in live_results:
+                    name_normalized = normalize_name(item["name"])
+                    try:
+                        c.execute("""
+                            INSERT INTO obituaries
+                            (name, name_normalized, age, location, date,
+                             source, link, obit_text)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING
+                        """, (item["name"], name_normalized, item.get("age"),
+                              item.get("location"), item.get("date"),
+                              item.get("source"), item.get("link"),
+                              item.get("obit_text")))
+                    except Exception:
+                        pass
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+                results.extend(live_results)
+            except Exception as e:
+                print(f"Live search failed: {e}")
+
         return results
 
 
-def calculate_confidence(search_name, found_name, search_loc, found_loc):
-    search_name = search_name.lower()
-    found_name = found_name.lower()
-    if search_name == found_name:
-        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
-            return "high"
-        return "medium"
-    if search_name in found_name or found_name in search_name:
-        return "medium"
-    return "low"
+async def search_legacy_live(name: str, location: str = None):
+    """Real-time search against Legacy.com when database has no results"""
+    import aiohttp
+    from urllib.parse import quote
+
+    results = []
+    name_parts = name.strip().split()
+    if len(name_parts) < 2:
+        return results
+
+    first_name = name_parts[0]
+    last_name = name_parts[-1]
+
+    search_url = f"https://www.legacy.com/obituaries/search?name={quote(first_name)}+{quote(last_name)}"
+    if location:
+        search_url += f"&location={quote(location)}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    # Parse results from Legacy search page
+                    import re
+                    # Extract obituary entries from HTML
+                    name_pattern = re.compile(r'"fullName"\s*:\s*"([^"]+)"')
+                    date_pattern = re.compile(r'"deathDate"\s*:\s*"([^"]+)"')
+                    location_pattern = re.compile(r'"residenceCity"\s*:\s*"([^"]+)"')
+                    link_pattern = re.compile(r'"obituaryUrl"\s*:\s*"([^"]+)"')
+                    obit_pattern = re.compile(r'"obituaryText"\s*:\s*"([^"]{0,500})"')
+
+                    names = name_pattern.findall(html)
+                    dates = date_pattern.findall(html)
+                    locations = location_pattern.findall(html)
+                    links = link_pattern.findall(html)
+                    obits = obit_pattern.findall(html)
+
+                    for i, found_name in enumerate(names[:10]):
+                        results.append({
+                            "id": -(i + 1),  # negative id flags as live result
+                            "name": found_name,
+                            "age": None,
+                            "location": locations[i] if i < len(locations) else None,
+                            "date": dates[i] if i < len(dates) else None,
+                            "source": "Legacy (live)",
+                            "link": links[i] if i < len(links) else None,
+                            "obit_text": obits[i] if i < len(obits) else None,
+                            "confidence": calculate_confidence(name, found_name, location,
+                                locations[i] if i < len(locations) else None)
+                        })
+    except Exception as e:
+        print(f"Legacy live search error: {e}")
+
+    return results
 
 
 # ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
