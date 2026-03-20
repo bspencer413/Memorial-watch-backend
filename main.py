@@ -557,6 +557,11 @@ async def search_legacy_live(name: str, location: str = None):
     "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=365",
     "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=365",
     "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=365",
+    "https://www.legacy.com/obituaries/wcfcourier/services/rss.ashx?recentdate=365",
+    "https://www.legacy.com/obituaries/globegazette/services/rss.ashx?recentdate=365",
+    "https://www.legacy.com/obituaries/siouxcityjournal/services/rss.ashx?recentdate=365",
+    "https://www.legacy.com/obituaries/thegazette/services/rss.ashx?recentdate=365",
+    "https://www.legacy.com/obituaries/qctimes/services/rss.ashx?recentdate=365",
 ]
 
 
