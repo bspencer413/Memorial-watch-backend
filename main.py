@@ -518,66 +518,6 @@ async def search_obituaries(search: ObituarySearch):
         return results
 
 
-async def search_legacy_live(name: str, location: str = None):
-    """Real-time search against Legacy.com when database has no results"""
-    import aiohttp
-    from urllib.parse import quote
-
-    results = []
-    name_parts = name.strip().split()
-    if len(name_parts) < 2:
-        return results
-
-    first_name = name_parts[0]
-    last_name = name_parts[-1]
-
-    search_url = f"https://www.legacy.com/obituaries/search?name={quote(first_name)}+{quote(last_name)}"
-    if location:
-        search_url += f"&location={quote(location)}"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    # Parse results from Legacy search page
-                    import re
-                    # Extract obituary entries from HTML
-                    name_pattern = re.compile(r'"fullName"\s*:\s*"([^"]+)"')
-                    date_pattern = re.compile(r'"deathDate"\s*:\s*"([^"]+)"')
-                    location_pattern = re.compile(r'"residenceCity"\s*:\s*"([^"]+)"')
-                    link_pattern = re.compile(r'"obituaryUrl"\s*:\s*"([^"]+)"')
-                    obit_pattern = re.compile(r'"obituaryText"\s*:\s*"([^"]{0,500})"')
-
-                    names = name_pattern.findall(html)
-                    dates = date_pattern.findall(html)
-                    locations = location_pattern.findall(html)
-                    links = link_pattern.findall(html)
-                    obits = obit_pattern.findall(html)
-
-                    for i, found_name in enumerate(names[:10]):
-                        results.append({
-                            "id": -(i + 1),  # negative id flags as live result
-                            "name": found_name,
-                            "age": None,
-                            "location": locations[i] if i < len(locations) else None,
-                            "date": dates[i] if i < len(dates) else None,
-                            "source": "Legacy (live)",
-                            "link": links[i] if i < len(links) else None,
-                            "obit_text": obits[i] if i < len(obits) else None,
-                            "confidence": calculate_confidence(name, found_name, location,
-                                locations[i] if i < len(locations) else None)
-                        })
-    except Exception as e:
-        print(f"Legacy live search error: {e}")
-
-    return results
-
-
 # ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
 @app.get("/notifications")
