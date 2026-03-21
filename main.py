@@ -15,11 +15,16 @@ import schedule
 import threading
 import time
 import re
+import httpx
 from contextlib import contextmanager
 
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
+
+# Email config — set RESEND_API_KEY in Render environment variables
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+FROM_EMAIL = "alerts@memorywatch.app"
 
 OBITUARY_FEEDS = [
     # Northeast
@@ -137,6 +142,23 @@ OBITUARY_FEEDS = [
     # Hawaii & Alaska
     "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3",
     "https://www.legacy.com/obituaries/adn/services/rss.ashx?recentdate=3",
+    # Canada
+    "https://www.legacy.com/obituaries/theglobeandmail/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/thestar/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/vancouversun/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/calgaryherald/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/ottawacitizen/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/montrealgazette/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/edmontonjournal/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/obituaries/windsorstar/services/rss.ashx?recentdate=3",
+    # UK
+    "https://www.legacy.com/uk/obituaries/yourlocalpaper-uk/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/uk/obituaries/thetimes-uk/services/rss.ashx?recentdate=3",
+    # Australia
+    "https://www.legacy.com/au/obituaries/smh/services/rss.ashx?recentdate=3",
+    "https://www.legacy.com/au/obituaries/theage/services/rss.ashx?recentdate=3",
+    # New Zealand
+    "https://www.legacy.com/obituaries/nzherald/services/rss.ashx?recentdate=3",
 ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
@@ -184,6 +206,7 @@ def init_db():
         obituary_id INTEGER NOT NULL,
         message TEXT NOT NULL,
         sent BOOLEAN DEFAULT FALSE,
+        email_sent BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id),
         FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
@@ -203,6 +226,7 @@ def init_db():
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT''')
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT''')
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT''')
+    c.execute('''ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)''')
@@ -229,6 +253,43 @@ def normalize_name(name: str) -> str:
         name = f"{parts[1].strip()} {parts[0].strip()}"
     name = re.sub(r"\b\w+'\w+\b", lambda m: m.group(0).title(), name)
     return name.title()
+
+
+def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, obit_location: str, obit_link: str):
+    """Send email alert when watchlist person is found in obituaries"""
+    if not RESEND_API_KEY:
+        print(f"Email not configured — skipping email to {to_email}")
+        return False
+    try:
+        location_text = f" in {obit_location}" if obit_location else ""
+        link_text = f'<p><a href="{obit_link}">Read the full obituary →</a></p>' if obit_link else ""
+        html_content = f"""
+        <div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #7c3aed;">Memory Watch Alert</h2>
+            <p>We found a possible obituary match for <strong>{watchlist_name}</strong> on your watchlist.</p>
+            <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Name:</strong> {obit_name}</p>
+                <p><strong>Location:</strong> {obit_location or 'Unknown'}</p>
+            </div>
+            {link_text}
+            <p style="color: #6b7280; font-size: 12px;">This is an automated alert from Memory Watch. To manage your watchlist, visit memorywatch.app</p>
+        </div>
+        """
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": FROM_EMAIL,
+                "to": [to_email],
+                "subject": f"Memory Watch Alert: {watchlist_name} — possible obituary found",
+                "html": html_content
+            },
+            timeout=10
+        )
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Email error: {e}")
+        return False
 
 
 class UserCreate(BaseModel):
@@ -273,7 +334,7 @@ class ObituaryResult(BaseModel):
     confidence: str
 
 
-app = FastAPI(title="Memory Watch API", version="1.3.0")
+app = FastAPI(title="Memory Watch API", version="1.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -327,300 +388,4 @@ def calculate_confidence(search_name, found_name, search_loc, found_loc):
 def extract_age(text: str) -> Optional[int]:
     match = re.search(r'\b(\d{1,3})\b', text)
     if match:
-        age = int(match.group(1))
-        if 0 < age < 120:
-            return age
-    return None
-
-
-def extract_location(text: str) -> Optional[str]:
-    match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
-    if match:
-        return match.group(1)
-    return None
-
-
-# ── HEALTH & DIAGNOSTICS ──────────────────────────────────────────────────────
-
-@app.api_route("/health", methods=["GET", "HEAD"])
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "version": "1.3.0"
-    }
-
-@app.get("/admin/stats")
-async def get_stats():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM obituaries")
-        obit_count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM death_records")
-        death_count = c.fetchone()[0]
-        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
-        recent = c.fetchall()
-        return {
-            "obituaries": obit_count,
-            "death_records": death_count,
-            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent]
-        }
-
-@app.get("/admin/scrape-now")
-async def scrape_now():
-    threading.Thread(target=scrape_obituaries, daemon=True).start()
-    return {"message": "Scrape started — check /admin/stats in 60 seconds"}
-
-
-# ── AUTH ──────────────────────────────────────────────────────────────────────
-
-@app.post("/auth/register", response_model=Token)
-async def register(user: UserCreate):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT id FROM users WHERE email = %s", (user.email,))
-        if c.fetchone():
-            raise HTTPException(status_code=400, detail="Email already registered")
-        password_hash = hash_password(user.password)
-        c.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-            (user.email, password_hash))
-        user_id = c.fetchone()[0]
-        conn.commit()
-        access_token = create_access_token(data={"sub": user_id})
-        return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/auth/login", response_model=Token)
-async def login(user: UserLogin):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
-        result = c.fetchone()
-        if not result or not verify_password(user.password, result[1]):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        access_token = create_access_token(data={"sub": result[0]})
-        return {"access_token": access_token, "token_type": "bearer"}
-
-
-# ── ACCOUNT ───────────────────────────────────────────────────────────────────
-
-@app.delete("/account")
-async def delete_account(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM notifications WHERE user_id = %s", (user_id,))
-        c.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
-        c.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        conn.commit()
-        return {"message": "Account permanently deleted"}
-
-
-# ── WATCHLIST ─────────────────────────────────────────────────────────────────
-
-@app.get("/watchlist", response_model=List[WatchlistResponse])
-async def get_watchlist(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, name, location, dob, status, created_at
-            FROM watchlist
-            WHERE user_id = %s AND status = 'active'
-            ORDER BY created_at DESC
-        """, (user_id,))
-        items = []
-        for row in c.fetchall():
-            items.append({
-                "id": row[0], "name": row[1], "location": row[2],
-                "dob": row[3], "status": row[4], "created_at": str(row[5])
-            })
-        return items
-
-@app.post("/watchlist")
-async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO watchlist (user_id, name, location, dob)
-            VALUES (%s, %s, %s, %s) RETURNING id
-        """, (user_id, item.name, item.location, item.dob))
-        conn.commit()
-        item_id = c.fetchone()[0]
-        return {"message": "Added to watchlist", "id": item_id}
-
-@app.delete("/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute(
-            "UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
-            (item_id, user_id))
-        conn.commit()
-        if c.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Item not found")
-        return {"message": "Removed from watchlist"}
-
-
-# ── SEARCH ────────────────────────────────────────────────────────────────────
-
-@app.post("/search", response_model=List[ObituaryResult])
-async def search_obituaries(search: ObituarySearch):
-    with get_db() as conn:
-        c = conn.cursor()
-        results = []
-        search_normalized = normalize_name(search.name)
-
-        query = """SELECT * FROM obituaries WHERE
-            name ILIKE %s OR name_normalized ILIKE %s"""
-        params = [f"%{search.name}%", f"%{search_normalized}%"]
-
-        if search.location:
-            query += " AND location ILIKE %s"
-            params.append(f"%{search.location}%")
-        if search.birth_year:
-            query += " AND date LIKE %s"
-            params.append(f"%{search.birth_year}%")
-        query += " ORDER BY scraped_at DESC LIMIT 20"
-        c.execute(query, params)
-
-        for row in c.fetchall():
-            confidence = calculate_confidence(
-                search.name, row[1], search.location, row[3])
-            results.append({
-                "id": row[0],
-                "name": row[1],
-                "age": row[2],
-                "location": row[3],
-                "date": row[4],
-                "source": "Legacy",
-                "link": row[6],
-                "obit_text": row[7] if len(row) > 7 else None,
-                "confidence": confidence
-            })
-
-        return results
-
-
-# ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
-
-@app.get("/notifications")
-async def get_notifications(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT n.id, n.message, n.created_at, w.name, o.link
-            FROM notifications n
-            JOIN watchlist w ON n.watchlist_id = w.id
-            JOIN obituaries o ON n.obituary_id = o.id
-            WHERE n.user_id = %s
-            ORDER BY n.created_at DESC LIMIT 50
-        """, (user_id,))
-        notifications = []
-        for row in c.fetchall():
-            notifications.append({
-                "id": row[0], "name": row[3],
-                "message": row[1], "created_at": str(row[2]),
-                "link": row[4]
-            })
-        return notifications
-
-
-# ── SCRAPER ───────────────────────────────────────────────────────────────────
-
-def scrape_obituaries():
-    print(f"[{datetime.now()}] Starting obituary scrape...")
-    total = 0
-    with get_db() as conn:
-        c = conn.cursor()
-        for feed_url in OBITUARY_FEEDS:
-            try:
-                feed = feedparser.parse(feed_url)
-                count = 0
-                for entry in feed.entries:
-                    title = ' '.join(entry.get('title', '').strip().split())
-                    link = entry.get('link', '')
-                    published = entry.get('published', '')
-                    obit_text = entry.get('summary', '') or entry.get('description', '')
-                    obit_text = re.sub(r'<[^>]+>', '', obit_text).strip()
-
-                    if not title or len(title) < 3:
-                        continue
-
-                    if link:
-                        c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
-                        if c.fetchone():
-                            continue
-
-                    name_normalized = normalize_name(title)
-                    age = extract_age(title)
-                    location = extract_location(title)
-
-                    c.execute("""
-                        INSERT INTO obituaries
-                        (name, name_normalized, age, location, date, source, link, obit_text)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (title, name_normalized, age, location,
-                          published, feed_url, link, obit_text))
-                    count += 1
-
-                conn.commit()
-                total += count
-                print(f"  {feed_url}: {count} new entries")
-
-            except Exception as e:
-                print(f"  ERROR {feed_url}: {e}")
-
-    print(f"[{datetime.now()}] Scrape complete. {total} new obituaries added.")
-    check_watchlist_matches()
-
-
-def check_watchlist_matches():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM watchlist WHERE status = 'active'")
-        watchlist_items = c.fetchall()
-        for watch in watchlist_items:
-            watch_name = watch[2]
-            watch_normalized = normalize_name(watch_name)
-            c.execute("""SELECT * FROM obituaries WHERE
-                name ILIKE %s OR name_normalized ILIKE %s""",
-                (f"%{watch_name}%", f"%{watch_normalized}%"))
-            matches = c.fetchall()
-            for obit in matches:
-                c.execute("""
-                    SELECT id FROM notifications
-                    WHERE watchlist_id = %s AND obituary_id = %s
-                """, (watch[0], obit[0]))
-                if not c.fetchone():
-                    message = f"Possible match found: {obit[1]} in {obit[3] or 'unknown location'}"
-                    c.execute("""
-                        INSERT INTO notifications
-                        (user_id, watchlist_id, obituary_id, message)
-                        VALUES (%s, %s, %s, %s)
-                    """, (watch[1], watch[0], obit[0], message))
-                    print(f"Notification created for user {watch[1]}: {message}")
-        conn.commit()
-
-
-def run_scheduler():
-    schedule.every(15).minutes.do(scrape_obituaries)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-
-# ── STARTUP ───────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    print("Database initialized")
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    print("Background scheduler started")
-    threading.Thread(target=scrape_obituaries, daemon=True).start()
-    print("Initial scrape started")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        age​​​​​​​​​​​​​​​​
