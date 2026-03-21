@@ -536,7 +536,7 @@ def scrape_obituaries():
                 feed = feedparser.parse(feed_url)
                 count = 0
                 for entry in feed.entries:
-                    title = entry.get('title', '').strip()
+                    title = ' '.join(entry.get('title', '').strip().split())
                     link = entry.get('link', '')
                     published = entry.get('published', '')
                     obit_text = entry.get('summary', '') or entry.get('description', '')
