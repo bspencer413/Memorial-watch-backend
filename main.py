@@ -20,7 +20,7 @@ from contextlib import contextmanager
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
-# Legacy.com newspaper RSS feeds — recentdate=3 pulls 1 year of obituaries
+
 OBITUARY_FEEDS = [
     # Northeast
     "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3",
@@ -138,23 +138,23 @@ OBITUARY_FEEDS = [
     "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3",
     "https://www.legacy.com/obituaries/adn/services/rss.ashx?recentdate=3",
 ]
+
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
 DB_USER = "memorial_watch_db_user"
 DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
 DB_NAME = "memorial_watch_db"
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
 
+
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS watchlist (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
@@ -165,7 +165,6 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id)
     )''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS obituaries (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -178,7 +177,6 @@ def init_db():
         obit_text TEXT,
         scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS notifications (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL,
@@ -191,7 +189,6 @@ def init_db():
         FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
         FOREIGN KEY (obituary_id) REFERENCES obituaries (id)
     )''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS death_records (
         id SERIAL PRIMARY KEY,
         first_name TEXT,
@@ -203,19 +200,12 @@ def init_db():
         source TEXT DEFAULT 'SSDI',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
-
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name
-        ON obituaries (name)''')
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT''')
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT''')
     c.execute('''ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized
-    ON obituaries (name_normalized)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized
-        ON obituaries (name_normalized)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name
-        ON death_records (last_name)''')
-
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)''')
     conn.commit()
     conn.close()
 
@@ -231,14 +221,12 @@ def get_db():
 
 
 def normalize_name(name: str) -> str:
-    """Convert 'Last, First' to 'First Last' and title case"""
     if not name:
         return name
     name = name.strip()
     if ',' in name:
         parts = name.split(',', 1)
         name = f"{parts[1].strip()} {parts[0].strip()}"
-    # Fix apostrophe capitalization (O'Connor, etc.)
     name = re.sub(r"\b\w+'\w+\b", lambda m: m.group(0).title(), name)
     return name.title()
 
@@ -285,7 +273,7 @@ class ObituaryResult(BaseModel):
     confidence: str
 
 
-app = FastAPI(title="Memory Watch API", version="1.2.0")
+app = FastAPI(title="Memory Watch API", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -324,14 +312,42 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+def calculate_confidence(search_name, found_name, search_loc, found_loc):
+    search_name = search_name.lower()
+    found_name = found_name.lower()
+    if search_name == found_name:
+        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
+            return "high"
+        return "medium"
+    if search_name in found_name or found_name in search_name:
+        return "medium"
+    return "low"
+
+
+def extract_age(text: str) -> Optional[int]:
+    match = re.search(r'\b(\d{1,3})\b', text)
+    if match:
+        age = int(match.group(1))
+        if 0 < age < 120:
+            return age
+    return None
+
+
+def extract_location(text: str) -> Optional[str]:
+    match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
+    if match:
+        return match.group(1)
+    return None
+
+
 # ── HEALTH & DIAGNOSTICS ──────────────────────────────────────────────────────
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.2.0"
+        "version": "1.3.0"
     }
 
 @app.get("/admin/stats")
@@ -342,14 +358,12 @@ async def get_stats():
         obit_count = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM death_records")
         death_count = c.fetchone()[0]
-        c.execute("""SELECT name, date, source FROM obituaries
-            ORDER BY scraped_at DESC LIMIT 5""")
+        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
         recent = c.fetchall()
         return {
             "obituaries": obit_count,
             "death_records": death_count,
-            "most_recent": [{"name": r[0], "date": r[1],
-                "source": r[2]} for r in recent]
+            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent]
         }
 
 @app.get("/admin/scrape-now")
@@ -380,8 +394,7 @@ async def register(user: UserCreate):
 async def login(user: UserLogin):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = %s",
-            (user.email,))
+        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
         result = c.fetchone()
         if not result or not verify_password(user.password, result[1]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -423,8 +436,7 @@ async def get_watchlist(user_id: int = Depends(get_current_user)):
         return items
 
 @app.post("/watchlist")
-async def add_to_watchlist(item: WatchlistItem,
-        user_id: int = Depends(get_current_user)):
+async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
@@ -436,8 +448,7 @@ async def add_to_watchlist(item: WatchlistItem,
         return {"message": "Added to watchlist", "id": item_id}
 
 @app.delete("/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: int,
-        user_id: int = Depends(get_current_user)):
+async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
         c.execute(
@@ -458,7 +469,6 @@ async def search_obituaries(search: ObituarySearch):
         results = []
         search_normalized = normalize_name(search.name)
 
-        # Search both original and normalized name in database
         query = """SELECT * FROM obituaries WHERE
             name ILIKE %s OR name_normalized ILIKE %s"""
         params = [f"%{search.name}%", f"%{search_normalized}%"]
@@ -487,19 +497,7 @@ async def search_obituaries(search: ObituarySearch):
                 "confidence": confidence
             })
 
-               # Live search disabled pending optimization
         return results
-
-def calculate_confidence(search_name, found_name, search_loc, found_loc):
-    search_name = search_name.lower()
-    found_name = found_name.lower()
-    if search_name == found_name:
-        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
-            return "high"
-        return "medium"
-    if search_name in found_name or found_name in search_name:
-        return "medium"
-    return "low"
 
 
 # ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
@@ -525,71 +523,6 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
             })
         return notifications
 
-async def search_legacy_live(name: str, location: str = None):
-    """Search Legacy RSS feeds in real time when database has no results"""
-    import aiohttp
-    
-    results = []
-    name_parts = name.strip().lower().split()
-    if len(name_parts) < 2:
-        return results
-
-    # Search a subset of high-volume feeds with longer date range
-    live_feeds = [
-    "https://www.legacy.com/obituaries/desmoinesregister/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/wcfcourier/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/globegazette/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/siouxcityjournal/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/thegazette/services/rss.ashx?recentdate=365",
-    "https://www.legacy.com/obituaries/qctimes/services/rss.ashx?recentdate=365",
-]
-
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            for feed_url in live_feeds:
-                try:
-                    async with session.get(feed_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                        if resp.status == 200:
-                            content = await resp.text()
-                            feed = feedparser.parse(content)
-                            for entry in feed.entries:
-                                title = entry.get('title', '').strip()
-                                title_lower = title.lower()
-                                # Check if all name parts appear in the title
-                                if all(part in title_lower for part in name_parts):
-                                    link = entry.get('link', '')
-                                    published = entry.get('published', '')
-                                    obit_text = entry.get('summary', '') or entry.get('description', '')
-                                    obit_text = re.sub(r'<[^>]+>', '', obit_text).strip()
-                                    name_normalized = normalize_name(title)
-                                    loc = extract_location(title)
-                                    age = extract_age(title)
-                                    results.append({
-                                        "id": -(len(results) + 1),
-                                        "name": name_normalized,
-                                        "age": age,
-                                        "location": loc,
-                                        "date": published,
-                                        "source": "Legacy (live)",
-                                        "link": link,
-                                        "obit_text": obit_text,
-                                        "confidence": calculate_confidence(
-                                            name, name_normalized, location, loc)
-                                    })
-                                    if len(results) >= 10:
-                                        return results
-                except Exception as e:
-                    print(f"Live feed error {feed_url}: {e}")
-                    continue
-    except Exception as e:
-        print(f"Live search session error: {e}")
-
-    return results
 
 # ── SCRAPER ───────────────────────────────────────────────────────────────────
 
@@ -606,30 +539,24 @@ def scrape_obituaries():
                     title = entry.get('title', '').strip()
                     link = entry.get('link', '')
                     published = entry.get('published', '')
-                    # Get full obituary text from RSS description
                     obit_text = entry.get('summary', '') or entry.get('description', '')
-                    # Strip HTML tags from obit text
                     obit_text = re.sub(r'<[^>]+>', '', obit_text).strip()
 
                     if not title or len(title) < 3:
                         continue
 
-                    # Check for duplicate by link
                     if link:
-                        c.execute("SELECT id FROM obituaries WHERE link = %s",
-                            (link,))
+                        c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
                         if c.fetchone():
                             continue
 
-                    # Normalize name — convert "Last, First" to "First Last"
                     name_normalized = normalize_name(title)
                     age = extract_age(title)
                     location = extract_location(title)
 
                     c.execute("""
                         INSERT INTO obituaries
-                        (name, name_normalized, age, location, date,
-                         source, link, obit_text)
+                        (name, name_normalized, age, location, date, source, link, obit_text)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """, (title, name_normalized, age, location,
                           published, feed_url, link, obit_text))
@@ -645,21 +572,6 @@ def scrape_obituaries():
     print(f"[{datetime.now()}] Scrape complete. {total} new obituaries added.")
     check_watchlist_matches()
 
-
-def extract_age(text: str) -> Optional[int]:
-    match = re.search(r'\b(\d{1,3})\b', text)
-    if match:
-        age = int(match.group(1))
-        if 0 < age < 120:
-            return age
-    return None
-
-def extract_location(text: str) -> Optional[str]:
-    match = re.search(
-        r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
-    if match:
-        return match.group(1)
-    return None
 
 def check_watchlist_matches():
     with get_db() as conn:
@@ -690,7 +602,7 @@ def check_watchlist_matches():
 
 
 def run_scheduler():
-    schedule.every(1).hours.do(scrape_obituaries)
+    schedule.every(15).minutes.do(scrape_obituaries)
     while True:
         schedule.run_pending()
         time.sleep(60)
