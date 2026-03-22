@@ -546,7 +546,7 @@ async def search_obituaries(search: ObituarySearch):
         for row in c.fetchall():
             try:
                 confidence = calculate_confidence(
-                    name, row[1] or '', search.location, row[3])
+                    search.name, row[1], search.location, row[4])
                 results.append({
                     "id": row[0],
                     "name": row[1],
@@ -555,9 +555,10 @@ async def search_obituaries(search: ObituarySearch):
                     "date": row[5],
                     "source": "Legacy",
                     "link": row[7],
-                    "obit_text": row[8],
+                    "obit_text": row[8] if len(row) > 8 else None,
                     "confidence": confidence
 })
+
             except Exception as e:
                 print(f"Error processing search result: {e}")
                 continue
