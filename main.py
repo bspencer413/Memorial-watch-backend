@@ -532,8 +532,8 @@ async def search_obituaries(search: ObituarySearch):
         if not name:
             return results
         search_normalized = normalize_name(name)
-        query = """SELECT * FROM obituaries WHERE
-            name ILIKE %s OR name_normalized ILIKE %s"""
+        query = """SELECT id, name, age, location, date, source, link, obit_text FROM obituaries WHERE
+        name ILIKE %s OR name_normalized ILIKE %s"""
         params = [f"%{name}%", f"%{search_normalized}%"]
         if search.location:
             query += " AND location ILIKE %s"
