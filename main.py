@@ -532,8 +532,8 @@ async def search_obituaries(search: ObituarySearch):
         if not name:
             return results
         search_normalized = normalize_name(name)
-        query = """SELECT id, name, age, location, date, source, link, obit_text FROM obituaries WHERE
-        name ILIKE %s OR name_normalized ILIKE %s"""
+        query = """SELECT id, name, name_normalized, age, location, date, source, link, obit_text FROM obituaries WHERE
+            name ILIKE %s OR name_normalized ILIKE %s"""
         params = [f"%{name}%", f"%{search_normalized}%"]
         if search.location:
             query += " AND location ILIKE %s"
@@ -546,10 +546,10 @@ async def search_obituaries(search: ObituarySearch):
         for row in c.fetchall():
             try:
                 confidence = calculate_confidence(
-                    search.name, row[1], search.location, row[4])
+                    name, row[1] or '', search.location, row[4])
                 results.append({
                     "id": row[0],
-                    "name": row[1],
+                    "name": row[1] or '',
                     "age": row[3],
                     "location": row[4],
                     "date": row[5],
@@ -557,8 +557,7 @@ async def search_obituaries(search: ObituarySearch):
                     "link": row[7],
                     "obit_text": row[8] if len(row) > 8 else None,
                     "confidence": confidence
-})
-
+                })
             except Exception as e:
                 print(f"Error processing search result: {e}")
                 continue
