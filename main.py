@@ -20,7 +20,7 @@ import urllib.parse
 import json as json_lib
 from contextlib import contextmanager
 
-SECRET_KEY = “your-secret-key-change-in-production”
+SECRET_KEY = os.environ.get(“SECRET_KEY”, “memorial-watch-secret-2026”)
 ALGORITHM = “HS256”
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
 
