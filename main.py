@@ -28,9 +28,6 @@ RESEND_API_KEY = os.environ.get(“RESEND_API_KEY”, “”)
 FROM_EMAIL = “alerts@memorywatch.app”
 
 OBITUARY_FEEDS = [
-
-# Northeast
-
 “https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=3”,
@@ -55,9 +52,6 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/fredericksburg/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/roanoke/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/richmond/services/rss.ashx?recentdate=3”,
-
-# Southeast
-
 “https://www.legacy.com/obituaries/orlandosentinel/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/charlotteobserver/services/rss.ashx?recentdate=3”,
@@ -79,9 +73,6 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/huntsville/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/al/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/arkansasonline/services/rss.ashx?recentdate=3”,
-
-# Midwest
-
 “https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=3”,
@@ -112,9 +103,6 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/argusleader/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/bismarcktribune/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/grandforksherald/services/rss.ashx?recentdate=3”,
-
-# Southwest
-
 “https://www.legacy.com/obituaries/azcentral/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=3”,
@@ -125,9 +113,6 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/lubbockonline/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/caller/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/elpasotimes/services/rss.ashx?recentdate=3”,
-
-# West
-
 “https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=3”,
@@ -150,14 +135,8 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/coloradoan/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/gjsentinel/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/wyomingfacts/services/rss.ashx?recentdate=3”,
-
-# Hawaii and Alaska
-
 “https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/adn/services/rss.ashx?recentdate=3”,
-
-# Canada
-
 “https://www.legacy.com/obituaries/theglobeandmail/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/thestar/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/vancouversun/services/rss.ashx?recentdate=3”,
@@ -166,18 +145,9 @@ OBITUARY_FEEDS = [
 “https://www.legacy.com/obituaries/montrealgazette/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/edmontonjournal/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/obituaries/windsorstar/services/rss.ashx?recentdate=3”,
-
-# UK
-
 “https://www.legacy.com/uk/obituaries/yourlocalpaper-uk/services/rss.ashx?recentdate=3”,
-
-# Australia
-
 “https://www.legacy.com/au/obituaries/smh/services/rss.ashx?recentdate=3”,
 “https://www.legacy.com/au/obituaries/theage/services/rss.ashx?recentdate=3”,
-
-# New Zealand
-
 “https://www.legacy.com/obituaries/nzherald/services/rss.ashx?recentdate=3”,
 ]
 
@@ -185,18 +155,18 @@ DB_HOST = “dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com”
 DB_USER = “memorial_watch_db_user”
 DB_PASS = “9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR”
 DB_NAME = “memorial_watch_db”
-DATABASE_URL = f”postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}”
+DATABASE_URL = “postgresql://” + DB_USER + “:” + DB_PASS + “@” + DB_HOST + “/” + DB_NAME
 
 def init_db():
 conn = psycopg2.connect(DATABASE_URL)
 c = conn.cursor()
-c.execute(’’‘CREATE TABLE IF NOT EXISTS users (
+c.execute(””“CREATE TABLE IF NOT EXISTS users (
 id SERIAL PRIMARY KEY,
 email TEXT UNIQUE NOT NULL,
 password_hash TEXT NOT NULL,
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)’’’)
-c.execute(’’‘CREATE TABLE IF NOT EXISTS watchlist (
+)”””)
+c.execute(””“CREATE TABLE IF NOT EXISTS watchlist (
 id SERIAL PRIMARY KEY,
 user_id INTEGER NOT NULL,
 name TEXT NOT NULL,
@@ -205,8 +175,8 @@ dob TEXT,
 status TEXT DEFAULT ‘active’,
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 FOREIGN KEY (user_id) REFERENCES users (id)
-)’’’)
-c.execute(’’‘CREATE TABLE IF NOT EXISTS obituaries (
+)”””)
+c.execute(””“CREATE TABLE IF NOT EXISTS obituaries (
 id SERIAL PRIMARY KEY,
 name TEXT NOT NULL,
 name_normalized TEXT,
@@ -217,8 +187,8 @@ source TEXT,
 link TEXT,
 obit_text TEXT,
 scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)’’’)
-c.execute(’’‘CREATE TABLE IF NOT EXISTS notifications (
+)”””)
+c.execute(””“CREATE TABLE IF NOT EXISTS notifications (
 id SERIAL PRIMARY KEY,
 user_id INTEGER NOT NULL,
 watchlist_id INTEGER NOT NULL,
@@ -230,8 +200,8 @@ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 FOREIGN KEY (user_id) REFERENCES users (id),
 FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
 FOREIGN KEY (obituary_id) REFERENCES obituaries (id)
-)’’’)
-c.execute(’’‘CREATE TABLE IF NOT EXISTS death_records (
+)”””)
+c.execute(””“CREATE TABLE IF NOT EXISTS death_records (
 id SERIAL PRIMARY KEY,
 first_name TEXT,
 last_name TEXT,
@@ -241,21 +211,18 @@ state TEXT,
 zip_code TEXT,
 source TEXT DEFAULT ‘SSDI’,
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)’’’)
-# Existing column additions
-c.execute(’’‘ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT’’’)
-c.execute(’’‘ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT’’’)
-c.execute(’’‘ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT’’’)
-c.execute(’’‘ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE’’’)
-# NEW: watchlist status columns for Wikipedia tracking
-c.execute(’’‘ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS is_deceased BOOLEAN DEFAULT FALSE’’’)
-c.execute(’’‘ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wikipedia_description TEXT’’’)
-c.execute(’’‘ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS death_year TEXT’’’)
-c.execute(’’‘ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wiki_last_checked TIMESTAMP’’’)
-# Indexes
-c.execute(’’‘CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)’’’)
-c.execute(’’‘CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)’’’)
-c.execute(’’‘CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)’’’)
+)”””)
+c.execute(“ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT”)
+c.execute(“ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT”)
+c.execute(“ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT”)
+c.execute(“ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE”)
+c.execute(“ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS is_deceased BOOLEAN DEFAULT FALSE”)
+c.execute(“ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wikipedia_description TEXT”)
+c.execute(“ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS death_year TEXT”)
+c.execute(“ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wiki_last_checked TIMESTAMP”)
+c.execute(“CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)”)
+c.execute(“CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)”)
+c.execute(“CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)”)
 conn.commit()
 conn.close()
 
@@ -274,43 +241,44 @@ return name
 name = name.strip()
 if ‘,’ in name:
 parts = name.split(’,’, 1)
-name = f”{parts[1].strip()} {parts[0].strip()}”
+name = parts[1].strip() + “ “ + parts[0].strip()
 name = re.sub(r”\b\w+’\w+\b”, lambda m: m.group(0).title(), name)
 return name.title()
 
 def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, obit_location: str, obit_link: str):
 if not RESEND_API_KEY:
-print(f”Email not configured - skipping email to {to_email}”)
+print(“Email not configured - skipping email to “ + to_email)
 return False
 try:
 location_text = obit_location or “Unknown”
-link_text = f’<p><a href="{obit_link}">Read more</a></p>’ if obit_link else “”
-html_content = f”””
-<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-<h2 style="color: #7c3aed;">Memory Watch Alert</h2>
-<p>We found a possible match for <strong>{watchlist_name}</strong> on your watchlist.</p>
-<p><strong>Name:</strong> {obit_name}</p>
-<p><strong>Location:</strong> {location_text}</p>
-{link_text}
-<hr style="border: 1px solid #e5e7eb; margin: 20px 0;">
-<p style="color: #6b7280; font-size: 12px;">You are receiving this because you added {watchlist_name} to your Memory Watch watchlist.
-To manage your watchlist, visit <a href="https://memorywatch.app">memorywatch.app</a></p>
-</div>
-“””
+link_text = ‘<p><a href="' + str(obit_link) + '">Read more</a></p>’ if obit_link else “”
+html_content = (
+‘<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; padding: 20px;">’
+‘<h2 style="color: #7c3aed;">Memory Watch Alert</h2>’
+‘<p>We found a possible match for <strong>’ + watchlist_name + ‘</strong> on your watchlist.</p>’
+’<p><strong>Name:</strong> ’ + obit_name + ‘</p>’
+’<p><strong>Location:</strong> ’ + location_text + ‘</p>’
++ link_text +
+‘<hr style="border: 1px solid #e5e7eb; margin: 20px 0;">’
+’<p style="color: #6b7280; font-size: 12px;">You are receiving this because you added ’
++ watchlist_name + ’ to your Memory Watch watchlist. ’
+‘To manage your watchlist, visit <a href="https://memorywatch.app">memorywatch.app</a></p>’
+‘</div>’
+)
 response = httpx.post(
 “https://api.resend.com/emails”,
-headers={“Authorization”: f”Bearer {RESEND_API_KEY}”, “Content-Type”: “application/json”},
+headers={“Authorization”: “Bearer “ + RESEND_API_KEY, “Content-Type”: “application/json”},
 json={
 “from”: FROM_EMAIL,
 “to”: [to_email],
-“subject”: f”Memory Watch Alert: {watchlist_name}”,
+“subject”: “Memory Watch Alert: “ + watchlist_name,
 “html”: html_content
 },
 timeout=10
 )
 return response.status_code == 200
 except Exception as e:
-print(f”Email error: {e}”)
+print(“Email error: “ + str(e))
 return False
 
 class UserCreate(BaseModel):
@@ -370,10 +338,10 @@ allow_headers=[”*”],
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=“auth/login”)
 
 def hash_password(password: str) -> str:
-return bcrypt.hashpw(password.encode(‘utf-8’), bcrypt.gensalt()).decode(‘utf-8’)
+return bcrypt.hashpw(password.encode(“utf-8”), bcrypt.gensalt()).decode(“utf-8”)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-return bcrypt.checkpw(plain_password.encode(‘utf-8’), hashed_password.encode(‘utf-8’))
+return bcrypt.checkpw(plain_password.encode(“utf-8”), hashed_password.encode(“utf-8”))
 
 def create_access_token(data: dict):
 to_encode = data.copy()
@@ -420,42 +388,32 @@ return match.group(1)
 return None
 
 def fetch_wiki_data(name: str) -> dict:
-“”“Fetch Wikipedia summary data for a name. Returns dict with all relevant fields.”””
-url = f”https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(name)}”
-req = urllib.request.Request(url, headers={‘User-Agent’: ‘MemoryWatch/1.0’})
+url = “https://en.wikipedia.org/api/rest_v1/page/summary/” + urllib.parse.quote(name)
+req = urllib.request.Request(url, headers={“User-Agent”: “MemoryWatch/1.0”})
 with urllib.request.urlopen(req, timeout=5) as resp:
 return json_lib.loads(resp.read().decode())
 
 def is_deceased_from_wiki(data: dict) -> bool:
-“”“Determine if a Wikipedia entry indicates the person is deceased.”””
-extract = data.get(‘extract’, ‘’)
-description = data.get(‘description’, ‘’)
-death_date = data.get(‘death_date’, None)
-page_type = data.get(‘type’, ‘’)
-
-```
-if page_type == 'disambiguation':
-    return False
-if death_date:
-    return True
-
-first_sentence = extract.split('.')[0] if extract else ''
-# Check for year range in brackets e.g. (1944–2026)
-if re.search(r'\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)', first_sentence):
-    return True
-if re.search(r'\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)', description):
-    return True
-# Skip if only born date present
-if re.search(r'\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)', first_sentence):
-    return False
-if re.search(r'\b(died|death|passed away|deceased)\b', extract, re.IGNORECASE):
-    return True
-if re.search(r'\b(died|death|deceased)\b', description, re.IGNORECASE):
-    return True
+extract = data.get(“extract”, “”)
+description = data.get(“description”, “”)
+death_date = data.get(“death_date”, None)
+page_type = data.get(“type”, “”)
+if page_type == “disambiguation”:
 return False
-```
-
-# ── HEALTH & DIAGNOSTICS ──────────────────────────────────
+if death_date:
+return True
+first_sentence = extract.split(”.”)[0] if extract else “”
+if re.search(r”(\d{4}\s*[\u2013\u2014-]+\s*\d{4})”, first_sentence):
+return True
+if re.search(r”(\d{4}\s*[\u2013\u2014-]+\s*\d{4})”, description):
+return True
+if re.search(r”([^)]*born\s+\w+\s+\d+,\s+\d{4})”, first_sentence):
+return False
+if re.search(r”\b(died|death|passed away|deceased)\b”, extract, re.IGNORECASE):
+return True
+if re.search(r”\b(died|death|deceased)\b”, description, re.IGNORECASE):
+return True
+return False
 
 @app.api_route(”/health”, methods=[“GET”, “HEAD”])
 async def health_check():
@@ -484,14 +442,12 @@ return {
 @app.get(”/admin/scrape-now”)
 async def scrape_now():
 threading.Thread(target=scrape_obituaries, daemon=True).start()
-return {“message”: “Scrape started — check /admin/stats in 60 seconds”}
+return {“message”: “Scrape started”}
 
 @app.get(”/admin/wiki-check-now”)
 async def wiki_check_now():
 threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
 return {“message”: “Wikipedia watchlist check started”}
-
-# ── AUTH ──────────────────────────────────────────────────
 
 @app.post(”/auth/register”, response_model=Token)
 async def register(user: UserCreate):
@@ -520,8 +476,6 @@ raise HTTPException(status_code=401, detail=“Invalid credentials”)
 access_token = create_access_token(data={“sub”: result[0]})
 return {“access_token”: access_token, “token_type”: “bearer”}
 
-# ── ACCOUNT ───────────────────────────────────────────────
-
 @app.delete(”/account”)
 async def delete_account(user_id: int = Depends(get_current_user)):
 with get_db() as conn:
@@ -531,8 +485,6 @@ c.execute(“DELETE FROM watchlist WHERE user_id = %s”, (user_id,))
 c.execute(“DELETE FROM users WHERE id = %s”, (user_id,))
 conn.commit()
 return {“message”: “Account permanently deleted”}
-
-# ── WATCHLIST ─────────────────────────────────────────────
 
 @app.get(”/watchlist”, response_model=List[WatchlistResponse])
 async def get_watchlist(user_id: int = Depends(get_current_user)):
@@ -582,15 +534,8 @@ return {“message”: “Removed from watchlist”}
 
 @app.get(”/watchlist/{item_id}/refresh”)
 async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_current_user)):
-“””
-Live Wikipedia re-fetch for a single watchlist item.
-Updates the stored description and is_deceased in the DB.
-Creates a notification if newly deceased.
-Returns the fresh Wikipedia data to the frontend.
-“””
 with get_db() as conn:
 c = conn.cursor()
-# Verify ownership
 c.execute(”””
 SELECT w.id, w.name, w.is_deceased, u.email
 FROM watchlist w
@@ -600,89 +545,57 @@ WHERE w.id = %s AND w.user_id = %s AND w.status = ‘active’
 row = c.fetchone()
 if not row:
 raise HTTPException(status_code=404, detail=“Watchlist item not found”)
-
-```
-    watch_id, watch_name, was_deceased, user_email = row
-
-    try:
-        data = fetch_wiki_data(watch_name)
-        extract = data.get('extract', '')
-        description = data.get('description', '')
-        death_date = data.get('death_date', None)
-        page_type = data.get('type', '')
-        thumbnail = data.get('thumbnail', {}).get('source') if data.get('thumbnail') else None
-        birth_date = data.get('birth_date', None)
-
-        is_deceased = is_deceased_from_wiki(data)
-
-        # Always update the stored description and status
-        c.execute("""
-            UPDATE watchlist
-            SET wikipedia_description = %s,
-                is_deceased = %s,
-                death_year = %s,
-                wiki_last_checked = %s
-            WHERE id = %s
-        """, (
-            extract[:2000] if extract else None,
-            is_deceased,
-            death_date,
-            datetime.utcnow(),
-            watch_id
-        ))
-        conn.commit()
-
-        # Create notification only if newly deceased (wasn't deceased before)
-        if is_deceased and not was_deceased:
-            c.execute("""
-                SELECT id FROM notifications
-                WHERE watchlist_id = %s AND message LIKE %s
-            """, (watch_id, '%Wikipedia%'))
-            if not c.fetchone():
-                death_info = f" Died: {death_date}" if death_date else ""
-                message = f"Wikipedia reports {watch_name} has passed away.{death_info}"
-                c.execute("""
-                    INSERT INTO notifications
-                    (user_id, watchlist_id, obituary_id, message, email_sent)
-                    VALUES (%s, %s, 1, %s, %s)
-                """, (user_id, watch_id, message, False))
-                conn.commit()
-                print(f"[refresh] Notification created for {watch_name}")
-
-                if user_email:
-                    wiki_link = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(watch_name)}"
-                    sent = send_email_notification(
-                        to_email=user_email,
-                        watchlist_name=watch_name,
-                        obit_name=watch_name,
-                        obit_location=None,
-                        obit_link=wiki_link
-                    )
-                    if sent:
-                        c.execute("""
-                            UPDATE notifications SET email_sent = TRUE
-                            WHERE watchlist_id = %s AND message LIKE %s
-                        """, (watch_id, '%Wikipedia%'))
-                        conn.commit()
-
-        return {
-            "id": watch_id,
-            "name": watch_name,
-            "is_deceased": is_deceased,
-            "wikipedia_description": extract,
-            "death_year": death_date,
-            "description": description,
-            "thumbnail": thumbnail,
-            "birth_date": birth_date,
-            "newly_deceased": is_deceased and not was_deceased
-        }
-
-    except Exception as e:
-        print(f"[refresh] Wikipedia error for {watch_name}: {e}")
-        raise HTTPException(status_code=503, detail=f"Wikipedia unavailable: {str(e)}")
-```
-
-# ── SEARCH ────────────────────────────────────────────────
+watch_id, watch_name, was_deceased, user_email = row
+try:
+data = fetch_wiki_data(watch_name)
+extract = data.get(“extract”, “”)
+description = data.get(“description”, “”)
+death_date = data.get(“death_date”, None)
+thumbnail = data.get(“thumbnail”, {}).get(“source”) if data.get(“thumbnail”) else None
+birth_date = data.get(“birth_date”, None)
+is_deceased = is_deceased_from_wiki(data)
+c.execute(”””
+UPDATE watchlist
+SET is_deceased = %s,
+wikipedia_description = %s,
+death_year = %s,
+wiki_last_checked = %s
+WHERE id = %s
+“””, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
+conn.commit()
+if is_deceased and not was_deceased:
+c.execute(
+“SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s”,
+(watch_id, “%Wikipedia%”))
+if not c.fetchone():
+death_info = “ Died: “ + str(death_date) if death_date else “”
+message = “Wikipedia reports “ + watch_name + “ has passed away.” + death_info
+c.execute(”””
+INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
+VALUES (%s, %s, 1, %s, %s)
+“””, (user_id, watch_id, message, False))
+conn.commit()
+if user_email:
+wiki_link = “https://en.wikipedia.org/wiki/” + urllib.parse.quote(watch_name)
+sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
+if sent:
+c.execute(
+“UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s”,
+(watch_id, “%Wikipedia%”))
+conn.commit()
+return {
+“id”: watch_id,
+“name”: watch_name,
+“is_deceased”: is_deceased,
+“wikipedia_description”: extract,
+“death_year”: death_date,
+“description”: description,
+“thumbnail”: thumbnail,
+“birth_date”: birth_date,
+“newly_deceased”: is_deceased and not was_deceased
+}
+except Exception as e:
+raise HTTPException(status_code=503, detail=“Wikipedia unavailable: “ + str(e))
 
 @app.post(”/search”, response_model=List[ObituaryResult])
 async def search_obituaries(search: ObituarySearch):
@@ -693,38 +606,31 @@ name = search.name.strip()
 if not name:
 return results
 search_normalized = normalize_name(name)
-query = “”“SELECT id, name, name_normalized, age, location, date, source, link, obit_text FROM obituaries WHERE
-name ILIKE %s OR name_normalized ILIKE %s”””
-params = [f”%{name}%”, f”%{search_normalized}%”]
+query = “”“SELECT id, name, name_normalized, age, location, date, source, link, obit_text
+FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s”””
+params = [”%” + name + “%”, “%” + search_normalized + “%”]
 if search.location:
 query += “ AND location ILIKE %s”
-params.append(f”%{search.location}%”)
+params.append(”%” + search.location + “%”)
 if search.birth_year:
 query += “ AND date LIKE %s”
-params.append(f”%{search.birth_year}%”)
+params.append(”%” + search.birth_year + “%”)
 query += “ ORDER BY scraped_at DESC LIMIT 20”
 c.execute(query, params)
 for row in c.fetchall():
 try:
-confidence = calculate_confidence(
-name, row[1] or ‘’, search.location, row[4])
+confidence = calculate_confidence(name, row[1] or “”, search.location, row[4])
 results.append({
-“id”: row[0],
-“name”: row[1] or ‘’,
-“age”: row[3],
-“location”: row[4],
-“date”: row[5],
-“source”: “Legacy”,
-“link”: row[7],
+“id”: row[0], “name”: row[1] or “”,
+“age”: row[3], “location”: row[4], “date”: row[5],
+“source”: “Legacy”, “link”: row[7],
 “obit_text”: row[8] if len(row) > 8 else None,
 “confidence”: confidence
 })
 except Exception as e:
-print(f”Error processing search result: {e}”)
+print(“Error processing search result: “ + str(e))
 continue
 return results
-
-# ── NOTIFICATIONS ─────────────────────────────────────────
 
 @app.get(”/notifications”)
 async def get_notifications(user_id: int = Depends(get_current_user)):
@@ -747,19 +653,8 @@ notifications.append({
 })
 return notifications
 
-# ── WIKIPEDIA WATCHLIST CHECKER ───────────────────────────
-
 def check_wikipedia_watchlist():
-“””
-Background job — runs every 6 hours.
-For every active watchlist entry:
-1. Always fetches fresh Wikipedia data
-2. Always updates is_deceased + wikipedia_description in DB
-3. Creates notification + sends email ONLY if newly deceased
-The notification dedup check only blocks duplicate notifications,
-never blocks the status update.
-“””
-print(f”[{datetime.now()}] Starting Wikipedia watchlist check…”)
+print(”[” + str(datetime.now()) + “] Starting Wikipedia watchlist check…”)
 with get_db() as conn:
 c = conn.cursor()
 c.execute(”””
@@ -771,88 +666,54 @@ WHERE w.status = ‘active’
 watchlist_items = c.fetchall()
 updated = 0
 notified = 0
-
-```
-    for watch in watchlist_items:
-        watch_id, user_id, watch_name, user_email, was_deceased = watch
-        try:
-            data = fetch_wiki_data(watch_name)
-            extract = data.get('extract', '')
-            description = data.get('description', '')
-            death_date = data.get('death_date', None)
-            page_type = data.get('type', '')
-
-            if page_type == 'disambiguation':
-                continue
-
-            is_deceased = is_deceased_from_wiki(data)
-
-            # ALWAYS update the watchlist row — status + description
-            c.execute("""
-                UPDATE watchlist
-                SET is_deceased = %s,
-                    wikipedia_description = %s,
-                    death_year = %s,
-                    wiki_last_checked = %s
-                WHERE id = %s
-            """, (
-                is_deceased,
-                extract[:2000] if extract else None,
-                death_date,
-                datetime.utcnow(),
-                watch_id
-            ))
-            conn.commit()
-            updated += 1
-
-            # Only create notification if NEWLY deceased
-            if is_deceased and not was_deceased:
-                # Check for duplicate notification only
-                c.execute("""
-                    SELECT id FROM notifications
-                    WHERE watchlist_id = %s AND message LIKE %s
-                """, (watch_id, '%Wikipedia%'))
-                if not c.fetchone():
-                    death_info = f" Died: {death_date}" if death_date else ""
-                    message = f"Wikipedia reports {watch_name} has passed away.{death_info}"
-                    c.execute("""
-                        INSERT INTO notifications
-                        (user_id, watchlist_id, obituary_id, message, email_sent)
-                        VALUES (%s, %s, 1, %s, %s)
-                    """, (user_id, watch_id, message, False))
-                    conn.commit()
-                    print(f"[wiki-check] Notification created for {watch_name}")
-                    notified += 1
-
-                    if user_email:
-                        wiki_link = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(watch_name)}"
-                        sent = send_email_notification(
-                            to_email=user_email,
-                            watchlist_name=watch_name,
-                            obit_name=watch_name,
-                            obit_location=None,
-                            obit_link=wiki_link
-                        )
-                        if sent:
-                            c.execute("""
-                                UPDATE notifications SET email_sent = TRUE
-                                WHERE watchlist_id = %s AND message LIKE %s
-                            """, (watch_id, '%Wikipedia%'))
-                            conn.commit()
-
-            time.sleep(0.5)
-
-        except Exception as e:
-            print(f"[wiki-check] Error for {watch_name}: {e}")
-            continue
-
-print(f"[{datetime.now()}] Wikipedia check complete. {updated} updated, {notified} new notifications.")
-```
-
-# ── SCRAPER ───────────────────────────────────────────────
+for watch in watchlist_items:
+watch_id, user_id, watch_name, user_email, was_deceased = watch
+try:
+data = fetch_wiki_data(watch_name)
+if data.get(“type”) == “disambiguation”:
+continue
+extract = data.get(“extract”, “”)
+death_date = data.get(“death_date”, None)
+is_deceased = is_deceased_from_wiki(data)
+c.execute(”””
+UPDATE watchlist
+SET is_deceased = %s,
+wikipedia_description = %s,
+death_year = %s,
+wiki_last_checked = %s
+WHERE id = %s
+“””, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
+conn.commit()
+updated += 1
+if is_deceased and not was_deceased:
+c.execute(
+“SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s”,
+(watch_id, “%Wikipedia%”))
+if not c.fetchone():
+death_info = “ Died: “ + str(death_date) if death_date else “”
+message = “Wikipedia reports “ + watch_name + “ has passed away.” + death_info
+c.execute(”””
+INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
+VALUES (%s, %s, 1, %s, %s)
+“””, (user_id, watch_id, message, False))
+conn.commit()
+notified += 1
+if user_email:
+wiki_link = “https://en.wikipedia.org/wiki/” + urllib.parse.quote(watch_name)
+sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
+if sent:
+c.execute(
+“UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s”,
+(watch_id, “%Wikipedia%”))
+conn.commit()
+time.sleep(0.5)
+except Exception as e:
+print(“Wiki check error for “ + watch_name + “: “ + str(e))
+continue
+print(”[” + str(datetime.now()) + “] Wikipedia check complete. “ + str(updated) + “ updated, “ + str(notified) + “ notified.”)
 
 def scrape_obituaries():
-print(f”[{datetime.now()}] Starting obituary scrape…”)
+print(”[” + str(datetime.now()) + “] Starting obituary scrape…”)
 total = 0
 with get_db() as conn:
 c = conn.cursor()
@@ -861,11 +722,11 @@ try:
 feed = feedparser.parse(feed_url)
 count = 0
 for entry in feed.entries:
-title = ’ ‘.join(entry.get(‘title’, ‘’).strip().split())
-link = entry.get(‘link’, ‘’)
-published = entry.get(‘published’, ‘’)
-obit_text = entry.get(‘summary’, ‘’) or entry.get(‘description’, ‘’)
-obit_text = re.sub(r’<[^>]+>’, ‘’, obit_text).strip()
+title = “ “.join(entry.get(“title”, “”).strip().split())
+link = entry.get(“link”, “”)
+published = entry.get(“published”, “”)
+obit_text = entry.get(“summary”, “”) or entry.get(“description”, “”)
+obit_text = re.sub(r”<[^>]+>”, “”, obit_text).strip()
 if not title or len(title) < 3:
 continue
 if link:
@@ -876,18 +737,16 @@ name_normalized = normalize_name(title)
 age = extract_age(title)
 location = extract_location(title)
 c.execute(”””
-INSERT INTO obituaries
-(name, name_normalized, age, location, date, source, link, obit_text)
+INSERT INTO obituaries (name, name_normalized, age, location, date, source, link, obit_text)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-“””, (title, name_normalized, age, location,
-published, feed_url, link, obit_text))
+“””, (title, name_normalized, age, location, published, feed_url, link, obit_text))
 count += 1
 conn.commit()
 total += count
-print(f”  {feed_url}: {count} new entries”)
+print(”  “ + feed_url + “: “ + str(count) + “ new entries”)
 except Exception as e:
-print(f”  ERROR {feed_url}: {e}”)
-print(f”[{datetime.now()}] Scrape complete. {total} new obituaries added.”)
+print(”  ERROR “ + feed_url + “: “ + str(e))
+print(”[” + str(datetime.now()) + “] Scrape complete. “ + str(total) + “ new obituaries added.”)
 check_watchlist_matches()
 
 def check_watchlist_matches():
@@ -903,38 +762,29 @@ watchlist_items = c.fetchall()
 for watch in watchlist_items:
 watch_id, user_id, watch_name, user_email = watch
 watch_normalized = normalize_name(watch_name)
-c.execute(””“SELECT id, name, location, link FROM obituaries WHERE
-name ILIKE %s OR name_normalized ILIKE %s”””,
-(f”%{watch_name}%”, f”%{watch_normalized}%”))
+c.execute(””“SELECT id, name, location, link FROM obituaries
+WHERE name ILIKE %s OR name_normalized ILIKE %s”””,
+(”%” + watch_name + “%”, “%” + watch_normalized + “%”))
 matches = c.fetchall()
 for obit in matches:
 obit_id, obit_name, obit_location, obit_link = obit
-c.execute(”””
-SELECT id FROM notifications
-WHERE watchlist_id = %s AND obituary_id = %s
-“””, (watch_id, obit_id))
+c.execute(
+“SELECT id FROM notifications WHERE watchlist_id = %s AND obituary_id = %s”,
+(watch_id, obit_id))
 if not c.fetchone():
-message = f”Possible match found: {obit_name} in {obit_location or ‘unknown location’}”
+message = “Possible match found: “ + obit_name + “ in “ + (obit_location or “unknown location”)
 c.execute(”””
-INSERT INTO notifications
-(user_id, watchlist_id, obituary_id, message, email_sent)
+INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
 VALUES (%s, %s, %s, %s, %s)
 “””, (user_id, watch_id, obit_id, message, False))
 conn.commit()
-print(f”Legacy notification created for user {user_id}: {message}”)
+print(“Legacy notification created for user “ + str(user_id) + “: “ + message)
 if user_email:
-sent = send_email_notification(
-to_email=user_email,
-watchlist_name=watch_name,
-obit_name=obit_name,
-obit_location=obit_location,
-obit_link=obit_link
-)
+sent = send_email_notification(user_email, watch_name, obit_name, obit_location, obit_link)
 if sent:
-c.execute(”””
-UPDATE notifications SET email_sent = TRUE
-WHERE watchlist_id = %s AND obituary_id = %s
-“””, (watch_id, obit_id))
+c.execute(
+“UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND obituary_id = %s”,
+(watch_id, obit_id))
 conn.commit()
 
 def run_scheduler():
@@ -943,8 +793,6 @@ schedule.every(6).hours.do(check_wikipedia_watchlist)
 while True:
 schedule.run_pending()
 time.sleep(60)
-
-# ── STARTUP ───────────────────────────────────────────────
 
 @app.on_event(“startup”)
 async def startup_event():
