@@ -549,15 +549,15 @@ async def search_obituaries(search: ObituarySearch):
                     name, row[1] or '', search.location, row[3])
                 results.append({
                     "id": row[0],
-                    "name": row[1] or '',
-                    "age": row[2],
-                    "location": row[3],
-                    "date": row[4],
+                    "name": row[1],
+                    "age": row[3],
+                    "location": row[4],
+                    "date": row[5],
                     "source": "Legacy",
-                    "link": row[6] if len(row) > 6 else None,
-                    "obit_text": row[7] if len(row) > 7 else None,
+                    "link": row[7],
+                    "obit_text": row[8],
                     "confidence": confidence
-                })
+})
             except Exception as e:
                 print(f"Error processing search result: {e}")
                 continue
