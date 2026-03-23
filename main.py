@@ -386,7 +386,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.4.5")
+app = FastAPI(title="Memory Watch API", version="1.4.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -453,7 +453,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.4.5"
+        "version": "1.4.8"
     }
 
 @app.get("/admin/stats")
@@ -591,7 +591,20 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
         is_deceased = False
 
         try:
-            wiki_data = fetch_wiki_data(watch_name)
+            # Always use first+last for Wikipedia - broader, handles middle names/initials
+            clean_parts = [p.replace(".", "") for p in watch_name.split() if len(p.replace(".", "")) > 1]
+            wiki_lookup = (clean_parts[0] + " " + clean_parts[-1]) if len(clean_parts) >= 2 else watch_name
+            print("[refresh] Looking up wiki: " + wiki_lookup + " (stored name: " + watch_name + ")")
+            wiki_data = fetch_wiki_data(wiki_lookup)
+            # If still disambiguation with first+last, also try full stored name
+            if wiki_data.get("type") == "disambiguation" and wiki_lookup != watch_name:
+                try:
+                    wiki_data2 = fetch_wiki_data(watch_name)
+                    if wiki_data2.get("type") != "disambiguation" and wiki_data2.get("extract"):
+                        wiki_data = wiki_data2
+                        print("[refresh] Full name resolved: " + watch_name)
+                except Exception:
+                    pass
             extract = wiki_data.get("extract", "")
             description = wiki_data.get("description", "")
             death_date = wiki_data.get("death_date", None)
@@ -600,10 +613,9 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             birth_date = wiki_data.get("birth_date", None)
             is_deceased = is_deceased_from_wiki(wiki_data)
             wiki_ok = True
-            print("[refresh] " + watch_name + " wiki_ok=" + str(wiki_ok) + " is_deceased=" + str(is_deceased))
+            print("[refresh] " + watch_name + " is_deceased=" + str(is_deceased) + " type=" + str(wiki_data.get("type")))
         except Exception as e:
             print("[refresh] Wikipedia fetch failed for " + watch_name + ": " + str(e))
-            # Do not default to False if wiki fails - keep was_deceased value
             is_deceased = was_deceased or False
 
         # Check Legacy one-off
@@ -702,9 +714,8 @@ async def search_obituaries(search: ObituarySearch):
         query = """SELECT id, name, name_normalized, age, location, date, source, link, obit_text
                    FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s"""
         params = ["%" + name + "%", "%" + search_normalized + "%"]
-        if search.location:
-            query += " AND location ILIKE %s"
-            params.append("%" + search.location + "%")
+        # NOTE: location not used as a filter - our scraped data has unreliable location fields
+        # birth_year filter kept as it is date-based and more reliable
         if search.birth_year:
             query += " AND date LIKE %s"
             params.append("%" + search.birth_year + "%")
@@ -763,9 +774,23 @@ def check_wikipedia_watchlist():
         for watch in watchlist_items:
             watch_id, user_id, watch_name, user_email, was_deceased = watch
             try:
-                data = fetch_wiki_data(watch_name)
+                # Strip middle names for broader Wikipedia match
+                clean_parts = [p.replace(".","") for p in watch_name.split() if len(p.replace(".","")) > 1]
+                wiki_lookup = (clean_parts[0] + " " + clean_parts[-1]) if len(clean_parts) >= 2 else watch_name
+                data = fetch_wiki_data(wiki_lookup)
                 if data.get("type") == "disambiguation":
-                    continue
+                    # Try full stored name as fallback
+                    if wiki_lookup != watch_name:
+                        try:
+                            data2 = fetch_wiki_data(watch_name)
+                            if data2.get("type") != "disambiguation" and data2.get("extract"):
+                                data = data2
+                            else:
+                                continue
+                        except Exception:
+                            continue
+                    else:
+                        continue
                 extract = data.get("extract", "")
                 death_date = data.get("death_date", None)
                 is_deceased = is_deceased_from_wiki(data)
