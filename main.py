@@ -219,6 +219,7 @@ def init_db():
     c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT")
     c.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE")
     c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS is_deceased BOOLEAN DEFAULT FALSE")
+    c.execute("UPDATE watchlist SET is_deceased = FALSE WHERE is_deceased IS NULL")
     c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wikipedia_description TEXT")
     c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS death_year TEXT")
     c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wiki_last_checked TIMESTAMP")
@@ -286,7 +287,7 @@ def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, 
 def fetch_wiki_data(name: str) -> dict:
     url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(name)
     req = urllib.request.Request(url, headers={"User-Agent": "MemoryWatch/1.0"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=15) as resp:
         return json_lib.loads(resp.read().decode())
 
 def is_deceased_from_wiki(data: dict) -> bool:
@@ -385,7 +386,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.4.4")
+app = FastAPI(title="Memory Watch API", version="1.4.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -452,7 +453,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.4.4"
+        "version": "1.4.5"
     }
 
 @app.get("/admin/stats")
@@ -662,6 +663,24 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             "newly_deceased": is_deceased and not was_deceased,
             "legacy_results": legacy_results
         }
+
+@app.get("/admin/test-refresh/{name}")
+async def test_refresh(name: str):
+    """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
+    try:
+        data = fetch_wiki_data(name)
+        is_deceased = is_deceased_from_wiki(data)
+        return {
+            "name": name,
+            "is_deceased": is_deceased,
+            "death_date": data.get("death_date"),
+            "description": data.get("description"),
+            "extract_first_sentence": (data.get("extract") or "").split(".")[0],
+            "type": data.get("type"),
+            "wiki_ok": True
+        }
+    except Exception as e:
+        return {"name": name, "wiki_ok": False, "error": str(e)}
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
