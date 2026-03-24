@@ -368,7 +368,7 @@ def fetch_wiki_data(name: str) -> dict:
         "type": page_type,
         "death_date": death_date,
         "death_from_category": death_from_category,
-        "thumbnail": thumbnail,
+        "thumbnail": thumb_url,
         "birth_date": birth_date,
     }
 
@@ -385,59 +385,37 @@ def normalize_name_for_wiki(name: str) -> str:
     return " ".join(result)
 
 def fetch_wiki_data_smart(name: str) -> dict:
-    # Try direct lookup first
+    # Try direct lookup - if resolves cleanly, use it
     data = fetch_wiki_data(name)
     if data.get("type") != "disambiguation" and data.get("extract"):
         return data
-    # If disambiguation or not found, use Wikipedia REST summary API with the search title
-    # The REST summary API resolves redirects and handles ambiguous names better
-    search_url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(name) + "&srlimit=5&format=json&origin=*"
-    req = urllib.request.Request(search_url, headers={"User-Agent": "MemoryWatch/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        search_data = json_lib.loads(resp.read().decode())
-    results = search_data.get("query", {}).get("search", [])
-    # Extract last name from search name for matching
-    name_parts = name.strip().split()
-    last_name = name_parts[-1].lower() if name_parts else ""
-    first_name = name_parts[0].lower() if name_parts else ""
-
-    for result in results:
-        title = result.get("title", "")
-        if "(disambiguation)" in title.lower():
-            continue
-        # Require last name to appear in result title
-        if last_name and last_name not in title.lower():
-            print("[wiki_smart] Skipping " + title + " - last name mismatch for " + name)
-            continue
-        try:
-            # Use REST summary API for the resolved title - handles redirects cleanly
-            sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title)
-            sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
-            with urllib.request.urlopen(sum_req, timeout=15) as sum_resp:
-                sum_data = json_lib.loads(sum_resp.read().decode())
-            if sum_data.get("type") == "disambiguation":
-                continue
-            if not sum_data.get("extract"):
-                continue
-            # Now get full data via action API using the resolved title
-            resolved_title = sum_data.get("title", title)
-            print("[wiki_smart] " + name + " resolved to: " + resolved_title)
-            candidate = fetch_wiki_data(resolved_title)
-            if candidate.get("type") != "disambiguation" and candidate.get("extract"):
-                # Merge thumbnail/birth_date/death_date from summary if action API missed them
-                if not candidate.get("thumbnail") and sum_data.get("thumbnail"):
-                    candidate["thumbnail"] = sum_data["thumbnail"]
-                if not candidate.get("death_date") and sum_data.get("death_date"):
-                    candidate["death_date"] = sum_data["death_date"]
-                if not candidate.get("birth_date") and sum_data.get("birth_date"):
-                    candidate["birth_date"] = sum_data["birth_date"]
-                if not candidate.get("description") and sum_data.get("description"):
-                    candidate["description"] = sum_data["description"]
-                return candidate
-        except Exception as e:
-            print("[wiki_smart] Error fetching " + title + ": " + str(e))
-            continue
+    # If disambiguation, return as-is - do NOT auto-resolve
+    print("[wiki_smart] " + name + " is disambiguation - not auto-resolving")
     return data
+
+
+def extract_full_death_date(data: dict) -> str:
+    if data.get("death_date"):
+        return str(data["death_date"])
+    extract = data.get("extract", "")
+    description = data.get("description", "")
+    import re as _re
+    month_names = "January|February|March|April|May|June|July|August|September|October|November|December"
+    pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
+    matches = _re.findall(pattern, extract)
+    if len(matches) >= 2:
+        return matches[-1]
+    if len(matches) == 1:
+        first_sentence = extract.split(".")[0]
+        if _re.search(r"died|death|passed|\u2013|\u2014", first_sentence, _re.IGNORECASE):
+            return matches[0]
+    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", description)
+    if m:
+        return m.group(1)
+    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", extract.split(".")[0] if extract else "")
+    if m:
+        return m.group(1)
+    return data.get("death_year_from_cat", "") or ""
 
 def is_deceased_from_wiki(data: dict) -> bool:
     extract = data.get("extract", "")
@@ -591,7 +569,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.4.9b")
+app = FastAPI(title="Memory Watch API", version="1.4.9c")
 
 app.add_middleware(
     CORSMiddleware,
@@ -658,7 +636,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.4.9b"
+        "version": "1.4.9c"
     }
 
 @app.get("/admin/stats")
@@ -801,7 +779,7 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             wiki_data = fetch_wiki_data_smart(normalized_watch_name)
             extract = wiki_data.get("extract", "")
             description = wiki_data.get("description", "")
-            death_date = wiki_data.get("death_date", None)
+            death_date = extract_full_death_date(wiki_data)
             if wiki_data.get("thumbnail"):
                 thumbnail = wiki_data["thumbnail"].get("source")
             birth_date = wiki_data.get("birth_date", None)
@@ -858,6 +836,12 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                         conn.commit()
 
         # Log what we found for debugging
+        # Ensure thumbnail is a string URL not a dict
+        thumb_url = None
+        if isinstance(thumbnail, dict):
+            thumb_url = thumbnail.get("source")
+        elif isinstance(thumbnail, str):
+            thumb_url = thumbnail
         print("[refresh] Result: " + watch_name + " is_deceased=" + str(is_deceased) + " has_thumbnail=" + str(thumbnail is not None) + " has_extract=" + str(len(extract) > 0))
         return {
             "id": watch_id,
@@ -867,7 +851,7 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             "death_year": death_date,
             "death_date": death_date,
             "description": description,
-            "thumbnail": thumbnail,
+            "thumbnail": thumb_url,
             "birth_date": birth_date,
             "newly_deceased": is_deceased and not was_deceased,
             "legacy_results": legacy_results
@@ -893,10 +877,13 @@ async def test_refresh(name: str):
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
-    """One-off Legacy.com search by name."""
-    normalized = normalize_name(name)
-    results = search_legacy_oneoff(normalized)
-    return {"name": normalized, "results": results, "count": len(results)}
+    try:
+        normalized = normalize_name(name)
+        results = search_legacy_oneoff(normalized)
+        return {"name": normalized, "results": results or [], "count": len(results or [])}
+    except Exception as e:
+        print("Legacy search error: " + str(e))
+        return {"name": name, "results": [], "count": 0}
 
 @app.post("/search", response_model=List[ObituaryResult])
 async def search_obituaries(search: ObituarySearch):
@@ -977,7 +964,7 @@ def check_wikipedia_watchlist():
                 if data.get("type") == "disambiguation":
                     continue
                 extract = data.get("extract", "")
-                death_date = data.get("death_date", None)
+                death_date = extract_full_death_date(data)
                 is_deceased = is_deceased_from_wiki(data)
                 c.execute("""
                     UPDATE watchlist
