@@ -1,1102 +1,1063 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
-from typing import Optional, List
-import jwt
-import bcrypt
-import psycopg2
-import psycopg2.extras
-import os
-import schedule
-import threading
-import time
-import re
-import httpx
-import urllib.request
-import urllib.parse
-import json as json_lib
-from contextlib import contextmanager
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#dc2626">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Dead or Alive -- DORA</title>
+  <meta name="description" content="DORA -- Dead or Alive. The only app with a death watchlist. Add anyone to your watchlist and get notified the moment they pass away. Search celebrities, friends, colleagues and find out instantly if they are dead or alive.">
+  <meta name="keywords" content="dead or alive, death watchlist, obituary alert, death notification, passed away notification, Legacy obituary, Wikipedia deaths, deceased alert">
+  <meta name="robots" content="index, follow">
+  <meta name="author" content="DORA">
+  <link rel="canonical" href="https://dora.watch">
+  <meta property="og:title" content="DORA -- Dead or Alive. Know Instantly.">
+  <meta property="og:description" content="The only death watchlist app. Add friends, family, colleagues or celebrities -- get notified the moment they pass away.">
+  <meta property="og:url" content="https://dora.watch">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://raw.githubusercontent.com/bspencer413/DORA/main/wanted.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="DORA -- Dead or Alive Death Watchlist">
+  <meta name="twitter:description" content="Add anyone to your death watchlist. Get notified instantly when they pass away.">
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/bspencer413/DORA/main/wanted.png">
+  <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiRGVhZCBvciBBbGl2ZSIsInNob3J0X25hbWUiOiJET1JBIiwic3RhcnRfdXJsIjoiLyIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiM3ZjFkMWQiLCJ0aGVtZV9jb2xvciI6IiNkYzI2MjYiLCJpY29ucyI6W3sic3JjIjoiaHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL2JzcGVuY2VyNDEzL0RPUkEvbWFpbi9kb3JhX2ljb24ucG5nIiwic2l6ZXMiOiI1MTJ4NTEyIiwidHlwZSI6ImltYWdlL3BuZyJ9XX0=">
+  <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/bspencer413/DORA/main/dora_icon.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; font-family: Georgia, 'Times New Roman', serif; }
+    html, body { height: 100%; overflow-x: hidden; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .tap-pulse { animation: pulse 1.8s ease-in-out infinite; }
+    .modal-drawer {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      background: #1a1a2e; border-radius: 20px 20px 0 0;
+      border-top: 1px solid #7f1d1d;
+      max-height: 85vh; overflow-y: auto;
+      transform: translateY(0);
+      transition: transform 0.3s ease;
+      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+    .modal-overlay { position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,0.6); }
+  </style>
+</head>
+<body style="margin:0;padding:0;">
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
 
-# import feedparser  # suspended - scraping paused
+const API_BASE = 'https://memorial-watch-backend-2.onrender.com';
+const WANTED_BG = 'https://raw.githubusercontent.com/bspencer413/DORA/main/wanted.png';
+const BILL_PHOTO = 'https://raw.githubusercontent.com/Bspencer413/Memorial-watch/main/Bill.jpeg';
+const APP_VERSION = '1.2.8';
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "memorial-watch-secret-2026")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 10080
+const isPhone = window.innerWidth < 500;
+const isTablet = window.innerWidth >= 500 && window.innerWidth < 1024;
+const PT = isPhone ? '38vh' : isTablet ? '48vh' : '44vh';
+const TAP_TOP = isPhone ? '82%' : '84%';
 
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-FROM_EMAIL = "alerts@memorywatch.app"
+const toTitleCase = (str) => {
+  if (!str) return str;
+  return str
+    .replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase())
+    .replace(/'\w/g, (txt) => txt.toUpperCase());
+};
 
-# OBITUARY_FEEDS suspended - scraping paused, code preserved below
-# OBITUARY_FEEDS = [
-# "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/philly/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/washingtonpost/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/baltimoresun/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/courant/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/pressherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/newsday/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/buffalonews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/syracuse/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/timesunion/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/providencejournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/delawareonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/app/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/northjersey/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nj/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/poconorecord/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/citizensvoice/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/timesleader/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/pittsburghpostgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fredericksburg/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/roanoke/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/richmond/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/orlandosentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/charlotteobserver/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/ajc/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tennessean/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nola/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sunherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/clarionledger/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tallahassee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/jacksonville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tampabay/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/heraldonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thestate/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/islandpacket/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/newsobserver/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greensboro/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/kentucky/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/courier-journal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/huntsville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/al/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/arkansasonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/indystar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/kansascity/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/cleveland/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dispatch/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/cincinnati/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dayton/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/akron/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/toledo/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/journalsentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/madison/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greenbaypressgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/postcrescent/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/lansingstatejournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/grandrapids/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/southbendtribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/jconline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fortwayne/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/evansville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/siouxcityjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/desmoinesregister/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/duluthnewstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/rapidcityjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/argusleader/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/bismarcktribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/grandforksherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/azcentral/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/expressnews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/abqjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tulsaworld/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/oklahoman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/lubbockonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/caller/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/elpasotimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/seattletimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/denverpost/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sltrib/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sacbee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fresnobee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/modbee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/mercedsunstar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thenewstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/spokesman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/idahostatesman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/montanastandard/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greatfallstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/billingsgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nevadaappeal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/rgj/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/reviewjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/coloradoan/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/gjsentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/wyomingfacts/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/adn/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/theglobeandmail/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thestar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/vancouversun/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/calgaryherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/ottawacitizen/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/montrealgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/edmontonjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/windsorstar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/uk/obituaries/yourlocalpaper-uk/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/au/obituaries/smh/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/au/obituaries/theage/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nzherald/services/rss.ashx?recentdate=3",
-# ]
+// Strip middle names/initials for Wikipedia lookup only
+const normalizeForWiki = (name) => {
+  if (!name) return name;
+  name = name.trim();
+  if (name.indexOf(',') > -1) {
+    const parts = name.split(',');
+    name = parts[1].trim() + ' ' + parts[0].trim();
+  }
+  // Strip middle initials: single letters with or without period (S, S., Sr., Jr. kept)
+  const words = name.split(/\s+/).filter(w => {
+    const stripped = w.replace(/\./g, '');
+    // Keep if more than 1 real letter (so "Jr" "Sr" "III" "IV" are kept)
+    // Strip if single letter or single letter + period (middle initials)
+    return stripped.length > 1;
+  });
+  if (words.length >= 3) return toTitleCase(words[0] + ' ' + words[words.length - 1]);
+  return toTitleCase(words.join(' '));
+};
 
-DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
-DB_USER = "memorial_watch_db_user"
-DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
-DB_NAME = "memorial_watch_db"
-DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
+// Add period after bare single-letter middle initials
+// "Robert S Mueller" -> "Robert S. Mueller"
+const addInitialPeriods = (name) => {
+  if (!name) return name;
+  return name.trim().split(/\s+/).map((word, i, arr) => {
+    if (word.length === 1 && /[A-Za-z]/.test(word) && i > 0 && i < arr.length - 1) {
+      return word + '.';
+    }
+    return word;
+  }).join(' ');
+};
 
-def init_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS watchlist (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        location TEXT,
-        dob TEXT,
-        status TEXT DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id)
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS obituaries (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        name_normalized TEXT,
-        age INTEGER,
-        location TEXT,
-        date TEXT,
-        source TEXT,
-        link TEXT,
-        obit_text TEXT,
-        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        watchlist_id INTEGER NOT NULL,
-        obituary_id INTEGER NOT NULL,
-        message TEXT NOT NULL,
-        sent BOOLEAN DEFAULT FALSE,
-        email_sent BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id),
-        FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
-        FOREIGN KEY (obituary_id) REFERENCES obituaries (id)
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS death_records (
-        id SERIAL PRIMARY KEY,
-        first_name TEXT,
-        last_name TEXT,
-        birth_date TEXT,
-        death_date TEXT,
-        state TEXT,
-        zip_code TEXT,
-        source TEXT DEFAULT 'SSDI',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
-    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT")
-    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT")
-    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT")
-    c.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE")
-    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS is_deceased BOOLEAN DEFAULT FALSE")
-    c.execute("UPDATE watchlist SET is_deceased = FALSE WHERE is_deceased IS NULL")
-    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wikipedia_description TEXT")
-    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS death_year TEXT")
-    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wiki_last_checked TIMESTAMP")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)")
-    conn.commit()
-    conn.close()
+const HomeIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+  </svg>
+);
+const HeartIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+  </svg>
+);
+const SearchIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+  </svg>
+);
+const InfoIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+const BellIcon = ({ red }) => (
+  <svg className="w-7 h-7" fill="none" stroke={red ? '#dc2626' : 'currentColor'} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+  </svg>
+);
+const PlusIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+  </svg>
+);
+const TrashIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+  </svg>
+);
+const EditIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+);
+const CheckIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+);
+const EyeIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+  </svg>
+);
+const EyeOffIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+  </svg>
+);
 
-@contextmanager
-def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = False
-    try:
-        yield conn
-    finally:
-        conn.close()
+const ClearableInput = ({ value, onChange, onBlur, onKeyPress, placeholder, type='text', maxLength, inputClass }) => (
+  <div className="relative">
+    <input type={type} placeholder={placeholder} value={value} onChange={onChange} onBlur={onBlur} onKeyPress={onKeyPress} maxLength={maxLength} className={inputClass + ' pr-10'} />
+    {value && value.length > 0 && (
+      <button onClick={() => onChange({ target: { value: '' } })} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-lg font-bold leading-none" type="button">X</button>
+    )}
+  </div>
+);
 
-def normalize_name(name: str) -> str:
-    if not name:
-        return name
-    name = name.strip()
-    if ',' in name:
-        parts = name.split(',', 1)
-        name = parts[1].strip() + " " + parts[0].strip()
-    name = re.sub(r"\b\w+'\w+\b", lambda m: m.group(0).title(), name)
-    return name.title()
+const CardPageHeader = ({ title, subtitle, onHome }) => (
+  <div className="mb-3 pb-2 border-b border-red-900/30">
+    <div className="flex items-center justify-between">
+      <div className="w-10" />
+      <h2 className="text-xl font-black text-white tracking-wide text-center flex-1">{title}</h2>
+      <button onClick={onHome} className="flex flex-col items-center text-white hover:text-red-400 transition-colors w-10">
+        <HomeIcon />
+        <span className="text-xs">Home</span>
+      </button>
+    </div>
+    {subtitle && <p className="text-gray-300 text-xs mt-1 text-center">{subtitle}</p>}
+  </div>
+);
 
-def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, obit_location: str, obit_link: str):
-    if not RESEND_API_KEY:
-        print("Email not configured - skipping email to " + to_email)
-        return False
-    try:
-        location_text = obit_location or "Unknown"
-        link_text = '<p><a href="' + str(obit_link) + '">Read more</a></p>' if obit_link else ""
-        html_content = (
-            '<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; padding: 20px;">'
-            '<h2 style="color: #7c3aed;">Memory Watch Alert</h2>'
-            '<p>We found a possible match for <strong>' + watchlist_name + '</strong> on your watchlist.</p>'
-            '<p><strong>Name:</strong> ' + obit_name + '</p>'
-            '<p><strong>Location:</strong> ' + location_text + '</p>'
-            + link_text +
-            '<hr style="border: 1px solid #e5e7eb; margin: 20px 0;">'
-            '<p style="color: #6b7280; font-size: 12px;">You are receiving this because you added '
-            + watchlist_name + ' to your Memory Watch watchlist. '
-            'To manage your watchlist, visit <a href="https://memorywatch.app">memorywatch.app</a></p>'
-            '</div>'
-        )
-        response = httpx.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": "Bearer " + RESEND_API_KEY, "Content-Type": "application/json"},
-            json={
-                "from": FROM_EMAIL,
-                "to": [to_email],
-                "subject": "Memory Watch Alert: " + watchlist_name,
-                "html": html_content
-            },
-            timeout=10
-        )
-        return response.status_code == 200
-    except Exception as e:
-        print("Email error: " + str(e))
-        return False
+const POSTER_STYLE = {
+  backgroundColor: '#2c1a0e',
+  backgroundImage: 'url(' + WANTED_BG + ')',
+  backgroundSize: 'contain',
+  backgroundPosition: 'center top',
+  backgroundRepeat: 'no-repeat',
+  backgroundAttachment: 'fixed',
+};
 
-def fetch_wiki_data(name: str) -> dict:
-    # Use action API with redirects - bypasses summary cache, gets current article data
-    params = urllib.parse.urlencode({
-        "action": "query",
-        "titles": name,
-        "prop": "extracts|pageprops|categories|info",
-        "exintro": "true",
-        "explaintext": "true",
-        "redirects": "1",
-        "inprop": "url",
-        "cllimit": "50",
-        "format": "json"
-    })
-    url = "https://en.wikipedia.org/w/api.php?" + params
-    req = urllib.request.Request(url, headers={"User-Agent": "MemoryWatch/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json_lib.loads(resp.read().decode())
+const PageWrapper = ({ children }) => (
+  <div style={{ minHeight: '100dvh', width: '100%', position: 'relative', paddingBottom: '5rem', ...POSTER_STYLE }}>
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.22)' }} />
+    <div style={{ position: 'relative', zIndex: 10 }}>{children}</div>
+  </div>
+);
 
-    pages = data.get("query", {}).get("pages", {})
-    if not pages:
-        return {}
+function isDeceasedCheck(extract, description, deathDate, type) {
+  if (type === 'disambiguation') return false;
+  if (deathDate) return true;
+  const firstSentence = extract ? extract.split('.')[0] : '';
+  const hasDeathInBrackets = /\(\d{4}\s*[-\u2013\u2014]+\s*\d{4}\)/.test(firstSentence);
+  const hasYearsInDescription = /\(\d{4}\s*[-\u2013\u2014]+\s*\d{4}\)/.test(description);
+  const hasBornOnly = /\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)/.test(firstSentence);
+  if (hasBornOnly && !hasDeathInBrackets && !hasYearsInDescription) return false;
+  const isPastTense = /^[^.]*\bwas (an?|the)\b[^.]*\./.test(extract) && !/\([^)]*born/.test(firstSentence) && !/born\s+\d{4}/.test(description);
+  const diedInExtract = /\b(died|death|passed away|deceased|d\.)\b/i.test(extract);
+  const diedInDescription = /\b(died|death|deceased)\b/i.test(description);
+  // Also check description for year range like "American attorney (1944-2026)"
+  const yearRangeInDesc = /\(\d{4}[-\u2013\u2014]+\d{4}\)/.test(description);
+  return hasDeathInBrackets || hasYearsInDescription || yearRangeInDesc || isPastTense || diedInExtract || diedInDescription;
+}
 
-    page = list(pages.values())[0]
-    if "missing" in page:
-        return {}
+function App() {
+  const [page, setPage] = useState('landing');
+  const [auth, setAuth] = useState(false);
+  const [user, setUser] = useState(null);
+  const [watchlist, setWatchlist] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [results, setResults] = useState([]);
+  const [searched, setSearched] = useState(false);
+  const [wikiProfile, setWikiProfile] = useState(null);
+  const [watchlistCheck, setWatchlistCheck] = useState(null);
+  const [watchlistChecking, setWatchlistChecking] = useState(false);
+  const [watchlistChecked, setWatchlistChecked] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [backendWaking, setBackendWaking] = useState(false);
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [sName, setSName] = useState('');
+  const [sLoc, setSLoc] = useState('');
+  const [sBirthYear, setSBirthYear] = useState('');
+  const [nw, setNw] = useState({ name: '', location: '', birthYear: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState('');
+  const [showDangerZone, setShowDangerZone] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // NEW: drawer now holds live refresh data, not just a wiki fetch
+  const [drawerData, setDrawerData] = useState(null);
+  const [drawerRefreshing, setDrawerRefreshing] = useState(false);
+  const [selectedDisambig, setSelectedDisambig] = useState(null);
+  const [dismissedAlerts, setDismissedAlerts] = useState([]);
+  const [apiVersion, setApiVersion] = useState('...'); // chosen match from disambiguation list
 
-    title = page.get("title", name)
-    extract = page.get("extract", "")
+  useEffect(() => {
+    fetch(API_BASE + '/health').then(r => r.json()).then(d => setApiVersion(d.version || '?')).catch(() => setApiVersion('?'));
+    const t = localStorage.getItem('doa_token');
+    const u = localStorage.getItem('doa_user');
+    if (t && u) { setUser(JSON.parse(u)); setAuth(true); setPage('watchlist'); loadWatchlist(); loadNotifications(); }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setTimeout(() => { document.querySelectorAll('input').forEach(i => i.blur()); }, 100);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
-    # Check categories for death - "2026 deaths", "2025 deaths" etc.
-    categories = [c.get("title", "") for c in page.get("categories", [])]
-    death_year_from_cat = None
-    for cat in categories:
-        m = re.search(r"(\d{4}) deaths", cat)
-        if m:
-            death_year_from_cat = m.group(1)
-            break
+  const loadWatchlist = async () => {
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/watchlist', { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      setWatchlist(await r.json());
+    } catch (e) { console.error(e); }
+  };
 
-    death_from_category = any(
-        any(word in cat.lower() for word in ["deaths", "murdered", "executed"])
-        for cat in categories
-    )
+  const loadNotifications = async () => {
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/notifications', { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      setNotifications(await r.json());
+    } catch (e) { console.error(e); }
+  };
 
-    # Check for disambiguation
-    page_type = "standard"
-    if "disambiguation" in page.get("pageprops", {}):
-        page_type = "disambiguation"
-    elif "(disambiguation)" in title:
-        page_type = "disambiguation"
+  const dismissAlert = async (notifId) => {
+    try {
+      const token = localStorage.getItem('doa_token');
+      await fetch(API_BASE + '/notifications/' + notifId, {
+        method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token }
+      });
+      setDismissedAlerts(prev => [...prev, notifId]);
+      await loadNotifications();
+    } catch (e) {
+      // If delete not supported, just hide locally
+      setDismissedAlerts(prev => [...prev, notifId]);
+      setNotifications(prev => prev.filter(n => n.id !== notifId));
+    }
+  };
 
-    # Build summary description from extract
-    description = ""
-    if extract:
-        first_sent = extract.split(".")[0]
-        description = first_sent[:150] if first_sent else ""
+  const doAuth = async () => {
+    if (!email || !password) return;
+    setLoading(true); setBackendWaking(false);
+    const wakeTimer = setTimeout(() => setBackendWaking(true), 3000);
+    try {
+      const endpoint = mode === 'login' ? 'login' : 'register';
+      const r = await fetch(API_BASE + '/auth/' + endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      clearTimeout(wakeTimer); setBackendWaking(false);
+      if (!r.ok) { const err = await r.json(); throw new Error(err.detail || 'Auth failed'); }
+      const data = await r.json();
+      localStorage.setItem('doa_token', data.access_token);
+      const u = { email, id: '123', name: email.split('@')[0] };
+      localStorage.setItem('doa_user', JSON.stringify(u));
+      setUser(u); setAuth(true); setPage('watchlist');
+      loadWatchlist(); loadNotifications();
+    } catch (error) { clearTimeout(wakeTimer); setBackendWaking(false); alert('Error: ' + error.message); }
+    finally { setLoading(false); }
+  };
 
-    # Also try summary API for thumbnail and birth/death dates
-    thumbnail = None
-    birth_date = None
-    death_date_summary = None
-    try:
-        sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title)
-        sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
-        with urllib.request.urlopen(sum_req, timeout=10) as sum_resp:
-            sum_data = json_lib.loads(sum_resp.read().decode())
-            thumb = sum_data.get("thumbnail")
-            thumbnail = thumb.get("source") if thumb else None
-            birth_date = sum_data.get("birth_date")
-            death_date_summary = sum_data.get("death_date")
-            if sum_data.get("description"):
-                description = sum_data.get("description")
-    except Exception:
-        pass
+  const doLogout = () => {
+    localStorage.removeItem('doa_token'); localStorage.removeItem('doa_user');
+    setAuth(false); setUser(null); setWatchlist([]); setNotifications([]);
+    setResults([]); setWikiProfile(null); setWatchlistCheck(null);
+    setWatchlistChecked(false); setSearched(false); setPage('landing');
+  };
 
-    # Use death_date from summary if available, otherwise from categories
-    death_date = death_date_summary or death_year_from_cat
+  const doDeleteAccount = async () => {
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/account', { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      doLogout(); alert('Your account has been permanently deleted.');
+    } catch (error) { alert('Error deleting account: ' + error.message); }
+  };
 
-    return {
-        "title": title,
-        "extract": extract,
-        "description": description,
-        "type": page_type,
-        "death_date": death_date,
-        "death_from_category": death_from_category,
-        "thumbnail": thumb_url,
-        "birth_date": birth_date,
+  const clearSearch = () => { setSName(''); setSLoc(''); setSBirthYear(''); setWikiProfile(null); setResults([]); setSearched(false); setSelectedDisambig(null); };
+  const clearWatchlistCheck = () => { setWatchlistCheck(null); setWatchlistChecked(false); setNw({ name: '', location: '', birthYear: '' }); setSelectedDisambig(null); };
+
+  const fetchWikiSingle = async (title) => {
+    try {
+      const w = await (await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title))).json();
+      if (!w.extract) return null;
+      const extract = w.extract || '', description = w.description || '', type = w.type || '';
+      if (type === 'disambiguation') return null;
+      const deceased = isDeceasedCheck(extract, description, w.death_date, type);
+      return { title: w.title, extract, thumbnail: w.thumbnail ? w.thumbnail.source : null, birthDate: w.birth_date || null, deathDate: deceased ? (w.death_date || 'deceased') : null, description, isDisambiguation: false };
+    } catch (e) { return null; }
+  };
+
+  const fetchDisambigMatches = async (title) => {
+    // Fetch the disambiguation page HTML, extract linked article titles
+    try {
+      const url = 'https://en.wikipedia.org/w/api.php?action=parse&page=' + encodeURIComponent(title) + '&prop=links&format=json&origin=*';
+      const data = await (await fetch(url)).json();
+      const links = (data.parse && data.parse.links) ? data.parse.links : [];
+      // Filter to likely person links (no File:, Category:, etc.)
+      const personLinks = links
+        .filter(l => l.ns === 0 && l['*'] && l['*'].length > 2)
+        .map(l => l['*'])
+        .slice(0, 8);
+      // Fetch summary for each candidate
+      const results = [];
+      for (const link of personLinks) {
+        const profile = await fetchWikiSingle(link);
+        if (profile) results.push(profile);
+        if (results.length >= 5) break;
+      }
+      return results;
+    } catch (e) { return []; }
+  };
+
+  const fetchWikiProfile = async (name) => {
+    const tryWiki = async (n) => {
+      const w = await (await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(n))).json();
+      return w;
+    };
+    try {
+      // Step 1: try name with periods added to bare initials
+      // "Robert S Mueller" -> "Robert S. Mueller" -> finds correct article
+      const nameWithPeriods = addInitialPeriods(toTitleCase(name));
+      let w = await tryWiki(nameWithPeriods);
+      // Step 1b: if that didn't work, try exact name as entered
+      if (!w.extract && nameWithPeriods !== toTitleCase(name)) {
+        w = await tryWiki(toTitleCase(name));
+      }
+      // Step 2: if not found, try first+last only
+      if (!w.extract) {
+        const simplified = normalizeForWiki(name);
+        if (simplified !== toTitleCase(name)) {
+          w = await tryWiki(simplified);
+        }
+      }
+      if (!w.extract) return { isDisambiguation: false, notFound: true };
+      const extract = w.extract || '', description = w.description || '', type = w.type || '';
+      if (type === 'disambiguation') {
+        // Return disambiguation with matches to show list
+        const matches = await fetchDisambigMatches(w.title);
+        return { isDisambiguation: true, title: w.title.replace(' (disambiguation)', ''), matches };
+      }
+      const deceased = isDeceasedCheck(extract, description, w.death_date, type);
+      return { title: w.title, extract, thumbnail: w.thumbnail ? w.thumbnail.source : null, birthDate: w.birth_date || null, deathDate: deceased ? (w.death_date || 'deceased') : null, description, isDisambiguation: false };
+    } catch (e) { return null; }
+  };
+
+  // CHANGED: tap on watchlist name now calls the backend /refresh endpoint
+  // which checks Wikipedia, updates DB, and returns fresh bio + status
+  const openWatchlistDrawer = async (watchItem) => {
+    setDrawerData({ name: watchItem.name, watchlistId: watchItem.id, profile: null, loading: true, newlyDeceased: false });
+    setDrawerRefreshing(true);
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/watchlist/' + watchItem.id + '/refresh', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (!r.ok) throw new Error('Refresh failed');
+      const data = await r.json();
+      // Build a profile object from the refresh response
+      const profile = {
+        title: data.name,
+        extract: data.wikipedia_description || '',
+        thumbnail: data.thumbnail || null,
+        birthDate: data.birth_date || null,
+        deathDate: data.is_deceased ? (data.death_date || data.death_year || 'deceased') : null,
+        description: data.description || '',
+        isDisambiguation: false
+      };
+      setDrawerData({ name: data.name, watchlistId: watchItem.id, profile, loading: false, newlyDeceased: data.newly_deceased });
+      // Always reload watchlist so status badge updates on screen
+      await loadWatchlist();
+      if (data.newly_deceased) {
+        await loadNotifications();
+      }
+    } catch (e) {
+      // Fallback to direct Wikipedia fetch if backend refresh fails
+      const profile = await fetchWikiProfile(watchItem.name);
+      setDrawerData({ name: watchItem.name, watchlistId: watchItem.id, profile, loading: false, newlyDeceased: false });
+    }
+    setDrawerRefreshing(false);
+  };
+
+  const isOnWatchlist = (name) => {
+    const normalized = normalizeForWiki(name).toLowerCase();
+    return watchlist.some(w => {
+      const stored = normalizeForWiki(w.name).toLowerCase();
+      return stored === normalized || w.name.toLowerCase() === name.toLowerCase();
+    });
+  };
+
+  const checkWatch = async () => {
+    const name = toTitleCase(nw.name);
+    if (!name.trim() || name.trim().length < 2) { alert('Please enter a name to search.'); return; }
+    // No early return for already-on-watchlist -- let Wikipedia run so user sees current status
+    setWatchlistChecking(true); setWatchlistCheck(null); setWatchlistChecked(false);
+    try { const profile = await fetchWikiProfile(name); setWatchlistCheck({ profile, name }); setWatchlistChecked(true); }
+    catch (error) { setWatchlistCheck({ profile: null, name }); setWatchlistChecked(true); }
+    finally { setWatchlistChecking(false); }
+  };
+
+  const confirmAddWatch = async () => {
+    if (!watchlistCheck) return;
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/watchlist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ name: watchlistCheck.name, location: nw.location, dob: nw.birthYear })
+      });
+      if (!r.ok) throw new Error('Failed');
+      await loadWatchlist();
+      clearWatchlistCheck();
+      setPage('notifications'); // CHANGED: go to alerts page after adding
+    } catch (error) { alert('Error: ' + error.message); }
+    finally { setLoading(false); }
+  };
+
+  const addWatchFromSearch = async (profileTitle) => {
+    if (isOnWatchlist(profileTitle)) { alert(profileTitle + ' is already on your watchlist!'); return; }
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/watchlist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ name: profileTitle, location: '', dob: '' })
+      });
+      if (!r.ok) throw new Error('Failed');
+      await loadWatchlist();
+      clearSearch();
+      setPage('notifications'); // CHANGED: go to alerts page after adding
+    } catch (error) { alert('Error: ' + error.message); }
+    finally { setLoading(false); }
+  };
+
+  const delWatch = async (id) => {
+    try {
+      const token = localStorage.getItem('doa_token');
+      const r = await fetch(API_BASE + '/watchlist/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      await loadWatchlist();
+    } catch (error) { alert('Error: ' + error.message); }
+  };
+
+  const doSearch = async () => {
+    if (!sName.trim() || sName.trim().length < 2) { alert('Please enter a name to search.'); return; }
+    setLoading(true); setWikiProfile(null); setResults([]); setSearched(false);
+    try {
+      const token = localStorage.getItem('doa_token');
+      // Legacy DB search - never crash on failure
+      try {
+        const r = await fetch(API_BASE + '/search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ name: toTitleCase(sName), location: sLoc || undefined, birth_year: sBirthYear || undefined })
+        });
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data)) setResults(data);
+        }
+      } catch (legacyErr) { console.log('Legacy search error:', legacyErr); }
+      // Wikipedia search - never crash on failure
+      try {
+        const profile = await fetchWikiProfile(sName);
+        if (profile) setWikiProfile(profile);
+      } catch (wikiErr) { console.log('Wiki search error:', wikiErr); }
+      setSearched(true);
+    } catch (error) { console.log('Search error:', error); setSearched(true); }
+    finally { setLoading(false); }
+  };
+
+  const unreadCount = notifications.length;
+  const iClass = "w-full px-4 py-2.5 border border-red-900/50 rounded-lg focus:ring-2 focus:ring-red-500 text-base bg-gray-900/60 text-white placeholder-gray-400";
+  const cardClass = "bg-black/35 rounded-2xl p-3 shadow-lg border border-red-900/30 backdrop-blur-sm";
+  const isWide = page === 'about' || page === 'privacy';
+  const containerClass = isWide ? 'w-full max-w-3xl mx-auto px-4' : 'w-full max-w-sm mx-auto px-3';
+
+  // SingleProfileCard -- shows one person's full bio
+  const SingleProfileCard = ({ profile, showAddButton, onBack }) => {
+    const alreadyWatching = isOnWatchlist(profile.title);
+    const isDisambig = profile.isDisambiguation;
+    return (
+      <div className="rounded-2xl overflow-hidden border border-red-800 shadow-lg">
+        <div className={'px-5 py-2 flex items-center gap-3 ' + (profile.deathDate ? 'bg-gray-800' : isDisambig ? 'bg-yellow-600' : 'bg-green-700')}>
+          <span className="text-white font-black tracking-widest text-sm">{profile.deathDate ? 'DEAD' : isDisambig ? 'UNSURE' : 'ALIVE'}</span>
+          {profile.deathDate && profile.deathDate !== 'deceased' && <span className="text-white/80 text-xs ml-auto">Died: {profile.deathDate}</span>}
+          {onBack && <button onClick={onBack} className="ml-auto text-white/60 text-xs underline">Back to list</button>}
+        </div>
+        <div className="bg-gray-900/70 p-4">
+          <div className="flex gap-3 items-start mb-3">
+            {profile.thumbnail ? <img src={profile.thumbnail} alt={profile.title} className="w-16 h-16 rounded-full object-cover border-2 border-red-600/50 shrink-0" /> : <div className="w-16 h-16 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-2xl">?</div>}
+            <div className="flex-1">
+              <h2 className="text-white text-lg font-bold mb-1">{profile.title}</h2>
+              {profile.birthDate && <p className="text-red-300 text-sm font-bold">Born: {profile.birthDate}</p>}
+              {!isDisambig && <p className="text-red-400 text-xs italic mt-1">{profile.description}</p>}
+            </div>
+          </div>
+          {!isDisambig && profile.extract && <p className="text-gray-100 text-sm leading-relaxed mb-3">{profile.extract}</p>}
+          {profile.deathDate && <div className="p-2 bg-gray-700/50 border border-gray-600/30 rounded-xl mb-3"><p className="text-gray-200 text-sm text-center">This person has passed away</p></div>}
+          {showAddButton && (
+            <div className="space-y-2 mb-2">
+              {!profile.deathDate && (alreadyWatching
+                ? <button onClick={() => setPage('notifications')} className="w-full py-2 bg-green-700/30 border border-green-500/40 text-green-200 rounded-xl text-sm text-center">Already on your watchlist</button>
+                : <button onClick={() => addWatchFromSearch(profile.title)} disabled={loading} className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"><PlusIcon /> Add to Watchlist</button>
+              )}
+              <button onClick={clearSearch} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center">Clear Search</button>
+            </div>
+          )}
+          <div className="p-2 bg-red-900/20 border border-red-800/20 rounded-xl">
+            <p className="text-red-200 text-xs">Data provided by Wikipedia. DORA donates a portion of revenues to the Wikimedia Foundation.</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // WikiCard -- handles single result OR disambiguation list
+  const WikiCard = ({ profile, showAddButton }) => {
+    // If we selected a specific person from disambiguation list
+    if (selectedDisambig) {
+      return <SingleProfileCard profile={selectedDisambig} showAddButton={showAddButton} onBack={() => setSelectedDisambig(null)} />;
+    }
+    // Disambiguation list
+    if (profile.isDisambiguation) {
+      return (
+        <div className="rounded-2xl overflow-hidden border border-red-800 shadow-lg">
+          <div className="px-5 py-2 bg-yellow-600">
+            <span className="text-white font-black tracking-widest text-sm">MULTIPLE MATCHES</span>
+          </div>
+          <div className="bg-gray-900/70 p-4">
+            <p className="text-gray-300 text-sm mb-1">Several people share this name.</p>
+            <p className="text-yellow-300 text-xs mb-3">Tip: Add a middle name or initial (e.g. "Robert S. Mueller") to find the right person directly.</p>
+            <div className="space-y-2">
+              {profile.matches && profile.matches.filter(m => {
+                // Only show matches where last name appears in the Wikipedia title
+                const searchLastName = (result && result.name ? result.name : (watchlistCheck && watchlistCheck.name ? watchlistCheck.name : '')).trim().split(/\s+/).pop().toLowerCase();
+                return searchLastName && m.title.toLowerCase().indexOf(searchLastName) !== -1;
+              }).map((m, i) => (
+                <button key={i} onClick={() => setSelectedDisambig(m)} className="w-full p-3 bg-gray-800/60 border border-red-900/30 rounded-xl text-left hover:bg-gray-700/60 transition-colors">
+                  <div className="flex items-center gap-3">
+                    {m.thumbnail ? <img src={m.thumbnail} alt={m.title} className="w-10 h-10 rounded-full object-cover border border-red-600/40 shrink-0" /> : <div className="w-10 h-10 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-lg">?</div>}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-bold truncate">{m.title}</p>
+                      <p className="text-red-400 text-xs italic truncate">{m.description}</p>
+                    </div>
+                    <span className={'px-2 py-0.5 rounded-full text-xs font-bold ' + (m.deathDate ? 'bg-gray-700 text-gray-300' : 'bg-green-800 text-green-300')}>{m.deathDate ? 'DEAD' : 'ALIVE'}</span>
+                  </div>
+                </button>
+              ))}
+              {(!profile.matches || profile.matches.length === 0) && (
+                <p className="text-gray-400 text-sm text-center py-3">Could not load matches. Try entering the full name including middle name.</p>
+              )}
+            </div>
+            <button onClick={clearSearch} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center mt-3">Clear Search</button>
+          </div>
+        </div>
+      );
+    }
+    // Not found
+    if (profile.notFound) return null;
+    // Single unambiguous result
+    return <SingleProfileCard profile={profile} showAddButton={showAddButton} />;
+  };
+
+    const WatchlistCheckCard = () => {
+    if (!watchlistCheck) return null;
+    const { profile, name } = watchlistCheck;
+
+    // Disambiguation list for watchlist check
+    if (profile && profile.isDisambiguation) {
+      if (selectedDisambig) {
+        // User picked one -- show full card with add option
+        const isDeceased = selectedDisambig.deathDate;
+        return (
+          <div className="rounded-2xl overflow-hidden border border-red-800 shadow-lg">
+            <div className={'px-5 py-2 flex items-center gap-3 ' + (isDeceased ? 'bg-gray-800' : 'bg-green-700')}>
+              <span className="text-white font-black tracking-widest text-sm">{isDeceased ? 'DEAD' : 'ALIVE'}</span>
+              {isDeceased && selectedDisambig.deathDate !== 'deceased' && <span className="text-white/80 text-xs ml-auto">Died: {selectedDisambig.deathDate}</span>}
+              <button onClick={() => setSelectedDisambig(null)} className="ml-auto text-white/60 text-xs underline">Back</button>
+            </div>
+            <div className="bg-gray-900/70 p-4">
+              <div className="flex gap-3 items-start mb-3">
+                {selectedDisambig.thumbnail ? <img src={selectedDisambig.thumbnail} alt={selectedDisambig.title} className="w-16 h-16 rounded-full object-cover border-2 border-red-600/50 shrink-0" /> : <div className="w-16 h-16 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-2xl">?</div>}
+                <div className="flex-1">
+                  <h2 className="text-white text-lg font-bold mb-1">{selectedDisambig.title}</h2>
+                  {selectedDisambig.birthDate && <p className="text-red-300 text-sm font-bold">Born: {selectedDisambig.birthDate}</p>}
+                  <p className="text-red-400 text-xs italic mt-1">{selectedDisambig.description}</p>
+                </div>
+              </div>
+              {selectedDisambig.extract && <p className="text-gray-100 text-sm leading-relaxed mb-3">{selectedDisambig.extract}</p>}
+              {isDeceased && <div className="p-2 bg-gray-700/50 border border-gray-600/30 rounded-xl mb-3"><p className="text-gray-200 text-sm text-center">This person has passed away.{selectedDisambig.deathDate !== 'deceased' ? ' Died: ' + selectedDisambig.deathDate : ''}</p></div>}
+              {!isDeceased && (
+                <div className="space-y-2 mt-2">
+                  <p className="text-white/80 text-sm text-center font-medium border-t border-white/10 pt-2">Add {selectedDisambig.title} to watchlist?</p>
+                  <button onClick={() => { setWatchlistCheck({ ...watchlistCheck, name: selectedDisambig.title }); confirmAddWatch(); }} disabled={loading} className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50">
+                    <PlusIcon /> {loading ? 'Adding...' : 'Yes, Add to Watchlist'}
+                  </button>
+                  <button onClick={() => setSelectedDisambig(null)} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center">Back to list</button>
+                </div>
+              )}
+              {isDeceased && <button onClick={clearWatchlistCheck} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center mt-2">Try Another Name</button>}
+            </div>
+          </div>
+        );
+      }
+      // Show disambiguation list
+      return (
+        <div className="rounded-2xl overflow-hidden border border-red-800 shadow-lg">
+          <div className="px-5 py-2 bg-yellow-600">
+            <span className="text-white font-black tracking-widest text-sm">MULTIPLE MATCHES</span>
+          </div>
+          <div className="bg-gray-900/70 p-4">
+            <p className="text-gray-300 text-sm mb-1">Several people share this name.</p>
+            <p className="text-yellow-300 text-xs mb-3">Tip: Add a middle name or initial (e.g. "Robert S. Mueller") to find the right person directly.</p>
+            <div className="space-y-2">
+              {profile.matches && profile.matches.filter(m => {
+                // Only show matches where last name appears in the Wikipedia title
+                const searchLastName = (result && result.name ? result.name : (watchlistCheck && watchlistCheck.name ? watchlistCheck.name : '')).trim().split(/\s+/).pop().toLowerCase();
+                return searchLastName && m.title.toLowerCase().indexOf(searchLastName) !== -1;
+              }).map((m, i) => (
+                <button key={i} onClick={() => setSelectedDisambig(m)} className="w-full p-3 bg-gray-800/60 border border-red-900/30 rounded-xl text-left hover:bg-gray-700/60 transition-colors">
+                  <div className="flex items-center gap-3">
+                    {m.thumbnail ? <img src={m.thumbnail} alt={m.title} className="w-10 h-10 rounded-full object-cover border border-red-600/40 shrink-0" /> : <div className="w-10 h-10 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-lg">?</div>}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-bold truncate">{m.title}</p>
+                      <p className="text-red-400 text-xs italic truncate">{m.description}</p>
+                    </div>
+                    <span className={'px-2 py-0.5 rounded-full text-xs font-bold ' + (m.deathDate ? 'bg-gray-700 text-gray-300' : 'bg-green-800 text-green-300')}>{m.deathDate ? 'DEAD' : 'ALIVE'}</span>
+                  </div>
+                </button>
+              ))}
+              {(!profile.matches || profile.matches.length === 0) && (
+                <p className="text-gray-400 text-sm text-center py-3">Could not load matches. Try entering the full name including middle name.</p>
+              )}
+            </div>
+            <button onClick={() => { setWatchlistChecked(false); setWatchlistCheck(null); setSelectedDisambig(null); }} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center mt-3 flex items-center justify-center gap-2">
+              <EditIcon /> Try a different name
+            </button>
+          </div>
+        </div>
+      );
     }
 
-def normalize_name_for_wiki(name: str) -> str:
-    # Add period after single-letter middle initials if missing
-    # "Robert S Mueller" -> "Robert S. Mueller"
-    words = name.strip().split()
-    result = []
-    for i, word in enumerate(words):
-        if len(word) == 1 and word.isalpha() and i > 0 and i < len(words) - 1:
-            result.append(word + ".")
-        else:
-            result.append(word)
-    return " ".join(result)
+    const isDeceased = profile && profile.deathDate;
+    const isDisambig = false;
+    const notFound = !profile || profile.notFound;
+    return (
+      <div className="rounded-2xl overflow-hidden border border-red-800 shadow-lg">
+        <div className={'px-5 py-2 ' + (isDeceased ? 'bg-gray-800' : notFound ? 'bg-blue-700' : 'bg-green-700')}>
+          <span className="text-white font-black tracking-widest text-sm">{isDeceased ? 'DEAD' : notFound ? 'NOT IN WIKIPEDIA' : 'ALIVE'}</span>
+        </div>
+        <div className="bg-gray-900/70 p-4">
+          {profile && !notFound && (
+            <>
+              <div className="flex gap-3 items-start mb-3">
+                {profile.thumbnail ? <img src={profile.thumbnail} alt={profile.title} className="w-16 h-16 rounded-full object-cover border-2 border-red-600/50 shrink-0" /> : <div className="w-16 h-16 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-2xl">?</div>}
+                <div className="flex-1">
+                  <h2 className="text-white text-lg font-bold mb-1">{profile.title}</h2>
+                  {profile.birthDate && <p className="text-red-300 text-sm font-bold">Born: {profile.birthDate}</p>}
+                  <p className="text-red-400 text-xs italic mt-1">{profile.description}</p>
+                </div>
+              </div>
+              {profile.extract && <p className="text-gray-100 text-sm leading-relaxed mb-3">{profile.extract}</p>}
+            </>
+          )}
+          {notFound && <div className="mb-3"><p className="text-white text-base font-bold mb-1">"{name}"</p><p className="text-gray-300 text-sm">No Wikipedia result found.</p></div>}
+          {isDeceased && <div className="p-2 bg-gray-700/50 border border-gray-600/30 rounded-xl mb-3"><p className="text-gray-200 text-sm text-center">This person has passed away.{profile.deathDate && profile.deathDate !== 'deceased' ? ' Died: ' + profile.deathDate : ''}</p></div>}
+          {!isDeceased && (
+            <div className="space-y-2 mt-2">
+              <p className="text-white/80 text-sm text-center font-medium border-t border-white/10 pt-2">
+                {notFound ? 'Add "' + name + '" to watchlist?' : 'Add ' + (profile ? profile.title : name) + ' to watchlist?'}
+              </p>
+              {isOnWatchlist(profile ? profile.title : name)
+                ? <p className="w-full py-2.5 text-center text-green-400 text-sm font-bold">Already on your watchlist</p>
+                : <button onClick={confirmAddWatch} disabled={loading} className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50">
+                    <PlusIcon /> {loading ? 'Adding...' : 'Yes, Add to Watchlist'}
+                  </button>
+              }
+              <button onClick={() => { setWatchlistChecked(false); setWatchlistCheck(null); setSelectedDisambig(null); }} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center flex items-center justify-center gap-2">
+                <EditIcon /> Edit Name
+              </button>
+              <button onClick={clearWatchlistCheck} className="w-full py-1.5 text-white/40 text-xs text-center">Cancel</button>
+            </div>
+          )}
+          {isDeceased && <button onClick={clearWatchlistCheck} className="w-full py-2 bg-white/10 border border-white/20 text-white/80 rounded-xl text-sm text-center mt-2">Try Another Name</button>}
+        </div>
+      </div>
+    );
+  };
 
-def fetch_wiki_data_smart(name: str) -> dict:
-    # Try direct lookup - if resolves cleanly, use it
-    data = fetch_wiki_data(name)
-    if data.get("type") != "disambiguation" and data.get("extract"):
-        return data
-    # If disambiguation, return as-is - do NOT auto-resolve
-    print("[wiki_smart] " + name + " is disambiguation - not auto-resolving")
-    return data
+    const WikiDrawer = () => {
+    if (!drawerData) return null;
+    const { name, profile, loading: drawerLoading, newlyDeceased } = drawerData;
+    return (
+      <>
+        <div className="modal-overlay" onClick={() => setDrawerData(null)} />
+        <div className="modal-drawer">
+          <div className="flex justify-between items-center px-4 pt-4 pb-2 border-b border-red-900/30">
+            <h3 className="text-white font-bold text-lg">{name}</h3>
+            <button onClick={() => setDrawerData(null)} className="text-gray-400 hover:text-white text-2xl font-bold">X</button>
+          </div>
+          <div className="p-4">
+            {drawerLoading && (
+              <div className="text-center py-8">
+                <p className="text-white animate-pulse">Checking Wikipedia...</p>
+              </div>
+            )}
+            {!drawerLoading && !profile && (
+              <div className="text-center py-8">
+                <p className="text-4xl mb-3">?</p>
+                <p className="text-white font-bold text-lg">Bio not available</p>
+                <p className="text-gray-300 text-sm mt-2">No Wikipedia entry found for "{name}"</p>
+                <p className="text-gray-400 text-xs mt-2">Try searching with full name including middle name</p>
+              </div>
+            )}
+            {!drawerLoading && profile && (
+              <>
+                <div className={'px-4 py-2 rounded-xl mb-4 flex items-center gap-3 ' + (profile.deathDate ? 'bg-gray-700' : profile.isDisambiguation ? 'bg-yellow-600' : 'bg-green-700')}>
+                  <span className="text-white font-black">{profile.deathDate ? 'DECEASED' : profile.isDisambiguation ? 'UNSURE' : 'ALIVE'}</span>
+                  {profile.deathDate && <span className="text-white/80 text-sm ml-auto">{profile.deathDate !== 'deceased' ? 'Died: ' + profile.deathDate : 'Deceased'}</span>}
+                </div>
+                {newlyDeceased && (
+                  <div className="p-3 bg-red-900/60 border border-red-600 rounded-xl mb-4">
+                    <p className="text-red-200 text-sm text-center font-bold">Status just updated -- this person has passed away. Notification sent.</p>
+                  </div>
+                )}
+                <div className="flex gap-3 items-start mb-4">
+                  {profile.thumbnail ? <img src={profile.thumbnail} alt={profile.title} className="w-20 h-20 rounded-full object-cover border-2 border-red-600/50 shrink-0" /> : <div className="w-20 h-20 rounded-full bg-red-900/40 flex items-center justify-center shrink-0 text-3xl">?</div>}
+                  <div className="flex-1">
+                    <h2 className="text-white text-xl font-bold mb-1">{profile.title}</h2>
+                    {profile.birthDate && <p className="text-red-300 text-sm font-bold">Born: {profile.birthDate}</p>}
+                    {!profile.isDisambiguation && <p className="text-red-400 text-xs italic mt-1">{profile.description}</p>}
+                  </div>
+                </div>
+                {!profile.isDisambiguation && profile.extract && <p className="text-gray-100 text-sm leading-relaxed mb-4">{profile.extract}</p>}
+                {profile.isDisambiguation && <div className="p-3 bg-yellow-500/20 border border-yellow-400/30 rounded-xl mb-4"><p className="text-yellow-200 text-sm text-center">Multiple people share this name</p></div>}
+              </>
+            )}
+            <button onClick={() => setDrawerData(null)} className="w-full py-3 bg-red-900/40 border border-red-800/50 text-white rounded-xl text-sm mt-2">Close</button>
+          </div>
+        </div>
+      </>
+    );
+  };
 
+  if (page === 'landing') {
+    return (
+      <div onClick={() => setPage('login')} style={{ minHeight: '100dvh', width: '100%', cursor: 'pointer', position: 'relative', ...POSTER_STYLE }}>
+        <div style={{ position: 'absolute', top: TAP_TOP, left: 0, right: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem' }}>
+          <div className="tap-pulse" style={{ color: 'white', fontSize: isPhone ? '1.2rem' : '1.1rem', fontWeight: '900', letterSpacing: '0.12em', textShadow: '0 2px 8px rgba(0,0,0,0.9)', textAlign: 'center' }}>TAP TO ENTER</div>
+          <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.7rem' }}>Free during beta</div>
+        </div>
+      </div>
+    );
+  }
 
-def extract_full_death_date(data: dict) -> str:
-    if data.get("death_date"):
-        return str(data["death_date"])
-    extract = data.get("extract", "")
-    description = data.get("description", "")
-    import re as _re
-    month_names = "January|February|March|April|May|June|July|August|September|October|November|December"
-    pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
-    matches = _re.findall(pattern, extract)
-    if len(matches) >= 2:
-        return matches[-1]
-    if len(matches) == 1:
-        first_sentence = extract.split(".")[0]
-        if _re.search(r"died|death|passed|\u2013|\u2014", first_sentence, _re.IGNORECASE):
-            return matches[0]
-    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", description)
-    if m:
-        return m.group(1)
-    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", extract.split(".")[0] if extract else "")
-    if m:
-        return m.group(1)
-    return data.get("death_year_from_cat", "") or ""
+  if (page === 'login') {
+    return (
+      <div style={{ minHeight: '100dvh', width: '100%', ...POSTER_STYLE, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: PT, paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '2rem' }}>
+        <div style={{ width: '100%', maxWidth: '22rem' }}>
+          <div className="bg-black/50 backdrop-blur-sm rounded-2xl p-4 shadow-2xl border border-red-900/40 space-y-3">
+            <div className="text-center">
+              <h1 className="text-white text-lg font-black tracking-widest">DEAD OR ALIVE</h1>
+              <p className="text-red-300 text-base mt-1 font-bold">Find out if the people you remember are dead or alive</p>
+              <p className="text-white/50 text-xs mt-1">Free during beta</p>
+            </div>
+            <input type="email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && doAuth()} className="w-full px-4 py-2 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-red-500 text-base" />
+            <div className="relative">
+              <input type={showPassword ? 'text' : 'password'} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && doAuth()} className="w-full px-4 py-2 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-red-500 text-base" />
+              <button onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/60">{showPassword ? <EyeOffIcon /> : <EyeIcon />}</button>
+            </div>
+            {backendWaking && <p className="text-white/60 text-xs text-center animate-pulse">Waking up the server...</p>}
+            <div className="grid grid-cols-2 gap-3">
+              <button onClick={() => { setMode('login'); doAuth(); }} disabled={loading} className="py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl disabled:opacity-50 text-base">{loading && mode === 'login' ? '...' : 'Sign In'}</button>
+              <button onClick={() => { setMode('register'); doAuth(); }} disabled={loading} className="py-2 bg-white/20 hover:bg-white/30 text-white font-bold rounded-xl disabled:opacity-50 text-base border border-white/30">{loading && mode === 'register' ? '...' : 'Register'}</button>
+            </div>
+            <p className="text-white/40 text-xs text-center">You'll stay signed in automatically</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-def is_deceased_from_wiki(data: dict) -> bool:
-    extract = data.get("extract", "")
-    description = data.get("description", "")
-    death_date = data.get("death_date", None)
-    page_type = data.get("type", "")
-    death_from_category = data.get("death_from_category", False)
+  return (
+    <PageWrapper>
+      <WikiDrawer />
+      <div className={containerClass}>
 
-    if page_type == "disambiguation":
-        return False
-    # Death year in category (e.g. "2026 deaths") is most reliable signal
-    if death_from_category:
-        return True
-    if death_date:
-        return True
-    first_sentence = extract.split(".")[0] if extract else ""
-    if re.search(r"\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)", first_sentence):
-        return True
-    if re.search(r"\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)", description):
-        return True
-    if re.search(r"\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)", first_sentence):
-        return False
-    if re.search(r"(died|death|passed away|deceased)", extract, re.IGNORECASE):
-        return True
-    if re.search(r"(died|death|deceased)", description, re.IGNORECASE):
-        return True
-    return False
+        {page === 'watchlist' && (
+          <div className="space-y-3" style={{ paddingTop: PT }}>
+            <div className={cardClass}>
+              <CardPageHeader title="Watchlist" subtitle="Add a person to monitor -- we'll alert you when their status changes" onHome={() => setPage('watchlist')} />
+              {!watchlistChecked ? (
+                <div className="space-y-3">
+                  <ClearableInput value={nw.name} onChange={(e) => setNw({...nw, name: e.target.value})} onBlur={(e) => setNw({...nw, name: toTitleCase(e.target.value)})} onKeyPress={(e) => e.key === 'Enter' && checkWatch()} placeholder="Full Name" inputClass={iClass} />
+                  <ClearableInput value={nw.location} onChange={(e) => setNw({...nw, location: e.target.value})} onKeyPress={(e) => e.key === 'Enter' && checkWatch()} placeholder="City and/or State (optional)" inputClass={iClass} />
+                  <ClearableInput value={nw.birthYear} onChange={(e) => setNw({...nw, birthYear: e.target.value.replace(/\D/g, '').slice(0, 4)})} onKeyPress={(e) => e.key === 'Enter' && checkWatch()} placeholder="Birth Year (optional)" maxLength={4} inputClass={iClass} />
+                  <button onClick={checkWatch} disabled={watchlistChecking} className="w-full py-3 bg-red-600 text-white rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 text-base font-bold">
+                    <SearchIcon /> {watchlistChecking ? 'Checking...' : 'Check Name'}
+                  </button>
+                </div>
+              ) : <WatchlistCheckCard />}
+            </div>
+          </div>
+        )}
 
-def search_legacy_oneoff(name: str) -> list:
-    """
-    One-off Legacy.com search - hits their search page directly.
-    Falls back to searching our local scraped DB if Legacy is unavailable.
-    """
-    results = []
+        {page === 'search' && (
+          <div className="space-y-3" style={{ paddingTop: PT }}>
+            <div className={cardClass}>
+              <CardPageHeader title="Search" subtitle="Look up anyone by name -- dead or alive" onHome={() => setPage('watchlist')} />
+              <div className="space-y-3">
+                <ClearableInput value={sName} onChange={(e) => { setSName(e.target.value); setWikiProfile(null); setResults([]); setSearched(false); }} onKeyPress={(e) => e.key === 'Enter' && doSearch()} placeholder="Name (first, last, or full)" inputClass={iClass} />
+                <ClearableInput value={sLoc} onChange={(e) => setSLoc(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && doSearch()} placeholder="City and/or State (optional)" inputClass={iClass} />
+                <ClearableInput value={sBirthYear} onChange={(e) => setSBirthYear(e.target.value.replace(/\D/g, '').slice(0, 4))} onKeyPress={(e) => e.key === 'Enter' && doSearch()} placeholder="Birth Year (optional)" maxLength={4} inputClass={iClass} />
+                <button onClick={doSearch} disabled={loading} className="w-full py-2.5 bg-red-600 text-white rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 text-base font-bold">
+                  <SearchIcon /> {loading ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            </div>
+            {wikiProfile && !loading && <WikiCard profile={wikiProfile} showAddButton={true} />}
+            {!loading && searched && !wikiProfile && results.length === 0 && (
+              <div className={cardClass + " text-center"}>
+                <p className="text-3xl mb-2">?</p>
+                <h3 className="font-bold text-white text-xl mb-1">No results for "{sName}"</h3>
+                <p className="text-gray-300 text-base">Try checking spelling or a middle name.</p>
+              </div>
+            )}
+            {results.length > 0 && (
+              <div className={cardClass}>
+                <h2 className="text-xl font-bold mb-1 text-white text-center">Obituary Records ({results.length})</h2>
+                <p className="text-sm text-gray-200 mb-3 text-center">Records found in our Legacy database</p>
+                <div className="space-y-3">
+                  {results.map(r => (
+                    <div key={r.id} className="p-3 border border-red-900/30 rounded-lg bg-gray-800/50">
+                      <div className="flex items-start justify-between mb-2">
+                        <h3 className="font-semibold text-base text-white">{r.name}</h3>
+                        <span className={'px-2 py-1 rounded-full text-xs ' + (r.confidence === 'high' ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300')}>{r.confidence}</span>
+                      </div>
+                      <div className="text-sm text-gray-300 space-y-1">
+                        {r.age && <p>Age: {r.age}</p>}
+                        <p>Location: {r.location || 'Unknown'}</p>
+                        <p>Date: {r.date || 'Unknown'}</p>
+                      </div>
+                      {r.obit_text && <p className="text-sm text-gray-300 mt-2 leading-relaxed border-t border-red-900/30 pt-2">{r.obit_text.slice(0, 300)}{r.obit_text.length > 300 ? '...' : ''}</p>}
+                      {r.link && <a href={r.link} target="_blank" rel="noopener noreferrer" className="text-red-400 text-xs mt-2 block">Read full obituary</a>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
-    # Try Legacy.com search directly
-    try:
-        parts = name.strip().split()
-        first = parts[0] if parts else name
-        last = parts[-1] if len(parts) > 1 else ""
-        search_url = (
-            "https://www.legacy.com/obituaries/search?firstName=" +
-            urllib.parse.quote(first) +
-            "&lastName=" + urllib.parse.quote(last)
-        )
-        req = urllib.request.Request(search_url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml",
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-            # Extract obit entries from the HTML using simple patterns
-            import re as _re
-            # Look for JSON-LD structured data
-            json_ld_matches = _re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, _re.DOTALL)
-            for match in json_ld_matches[:5]:
-                try:
-                    obj = json_lib.loads(match)
-                    if isinstance(obj, list):
-                        for item in obj:
-                            if item.get("@type") in ["Person", "Obituary"]:
-                                results.append({
-                                    "name": item.get("name", name),
-                                    "date": item.get("deathDate", ""),
-                                    "location": item.get("address", {}).get("addressLocality", "") if isinstance(item.get("address"), dict) else "",
-                                    "link": item.get("url", search_url),
-                                    "obit_text": item.get("description", "")
-                                })
-                    elif isinstance(obj, dict) and obj.get("@type") in ["Person", "Obituary"]:
-                        results.append({
-                            "name": obj.get("name", name),
-                            "date": obj.get("deathDate", ""),
-                            "location": obj.get("address", {}).get("addressLocality", "") if isinstance(obj.get("address"), dict) else "",
-                            "link": obj.get("url", search_url),
-                            "obit_text": obj.get("description", "")
-                        })
-                except Exception:
-                    continue
-            if results:
-                print("Legacy direct search found " + str(len(results)) + " results for " + name)
-                return results[:5]
-    except Exception as e:
-        print("Legacy direct search error: " + str(e))
+        {/* CHANGED: notifications page now shows watchlist list below alerts */}
+        {page === 'notifications' && (
+          <div className="space-y-3" style={{ paddingTop: PT }}>
+            <div className={cardClass}>
+              <CardPageHeader title="Alerts" subtitle="Status changes for people on your watchlist" onHome={() => setPage('watchlist')} />
+              {notifications.length === 0 ? (
+                <div className="text-center py-4">
+                  <p className="text-white font-bold text-xl">No alerts yet</p>
+                  <p className="text-gray-200 text-base mt-1">We'll alert you when someone on your watchlist passes away</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.map(n => (
+                    <div key={n.id} className="p-3 bg-red-950/50 border border-red-800 rounded-xl">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1">
+                          <h3 className="font-bold text-white text-base">{n.name}</h3>
+                          <p className="text-gray-300 text-sm mt-1">{n.message}</p>
+                          <p className="text-gray-500 text-xs mt-1">{new Date(n.created_at).toLocaleDateString()}</p>
+                        </div>
+                        <button onClick={() => dismissAlert(n.id)} className="text-gray-500 hover:text-red-400 text-xs px-2 py-1 border border-gray-700 rounded-lg shrink-0">Dismiss</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Watchlist list below alerts */}
+            <div className={cardClass}>
+              <h2 className="text-xl font-bold mb-0.5 text-white text-center">Your Watchlist ({watchlist.length})</h2>
+              <p className="text-sm text-gray-200 mb-3 text-center">Tap a name to check their current status</p>
+              {watchlist.length === 0 ? <p className="text-gray-400 text-center py-6">No one on your watchlist yet</p> : (
+                <div className="space-y-3">
+                  {watchlist.map(w => (
+                    <div key={w.id} className={'p-3 rounded-lg border ' + (w.is_deceased ? 'bg-gray-900/70 border-gray-600/50' : 'bg-gray-800/50 border-red-900/20')}>
+                      {editingId === w.id ? (
+                        <div className="space-y-2">
+                          <ClearableInput value={editingName} onChange={(e) => setEditingName(e.target.value)} placeholder="Enter name" inputClass="w-full px-3 py-2 border border-red-700 rounded-lg focus:ring-2 focus:ring-red-500 text-base bg-gray-700 text-white placeholder-gray-400" />
+                          <div className="flex gap-2">
+                            <button onClick={async () => {
+                              await delWatch(w.id);
+                              const token = localStorage.getItem('doa_token');
+                              await fetch(API_BASE + '/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify({ name: toTitleCase(editingName), location: w.location, dob: w.dob }) });
+                              await loadWatchlist(); setEditingId(null); setEditingName('');
+                            }} className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-bold">Save</button>
+                            <button onClick={() => { setEditingId(null); setEditingName(''); }} className="flex-1 py-2 bg-gray-600 text-gray-200 rounded-lg text-sm">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <button onClick={() => openWatchlistDrawer(w)} className="text-left w-full">
+                              <h3 className={'font-semibold text-base underline decoration-dotted truncate ' + (w.is_deceased ? 'text-gray-400 line-through' : 'text-white hover:text-red-300')}>{w.name}</h3>
+                            </button>
+                            <div className="text-sm text-gray-300">{w.location && <span>{w.location}</span>}{w.dob && <span> - Born: {w.dob}</span>}</div>
+                            <div className="flex items-center gap-1 mt-1">
+                              {w.is_deceased
+                                ? <span className="text-xs text-red-400 font-bold">DECEASED</span>
+                                : <><CheckIcon /><span className="text-xs text-green-400">Active</span></>
+                              }
+                            </div>
+                          </div>
+                          <div className="flex gap-2 ml-2 shrink-0">
+                            <button onClick={() => { setEditingId(w.id); setEditingName(w.name); }} className="p-2 text-red-400 hover:bg-red-900/30 rounded-lg"><EditIcon /></button>
+                            <button onClick={() => delWatch(w.id)} className="p-2 text-red-500 hover:bg-red-900/30 rounded-lg"><TrashIcon /></button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
-    # Fallback: search our local scraped DB
-    try:
-        from contextlib import contextmanager as _cm
-        normalized = normalize_name(name)
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT name, location, date, link, obit_text FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s ORDER BY scraped_at DESC LIMIT 5",
-                ("%" + name + "%", "%" + normalized + "%")
-            )
-            for row in c.fetchall():
-                results.append({
-                    "name": row[0] or name,
-                    "date": row[2] or "",
-                    "location": row[1] or "",
-                    "link": row[3] or "",
-                    "obit_text": row[4] or ""
-                })
-        if results:
-            print("Legacy DB fallback found " + str(len(results)) + " results for " + name)
-    except Exception as e:
-        print("Legacy DB fallback error: " + str(e))
+        {page === 'about' && (
+          <div className="space-y-4 pb-8" style={{ paddingTop: '1rem' }}>
+            <div className={cardClass}>
+              <CardPageHeader title="About Dead or Alive" onHome={() => setPage('watchlist')} />
+              <p className="text-red-300 italic text-base leading-relaxed mb-4">Find people you miss. Find out if they are dead or alive.</p>
+              <div className="space-y-3 text-gray-200 text-sm leading-relaxed">
+                <p>Dead or Alive was built by three brains -- mine, ChatGPT, and Claude (Anthropic). I'm a retired 74 year old former high-tech entrepreneur. As I get older, I look at the obituaries and wonder about old friends. Did they make it? Are they still out there?</p>
+                <p>Traditional search engines are frustrating for this. So I built Dead or Alive -- a straight answer to a simple question, with a watchlist that alerts you the moment someone passes away.</p>
+                <p>We partner with Legacy, the largest obituary platform in the US, covering more than 70% of all U.S. deaths. We also partner with Wikipedia for biographical information on notable people.</p>
+                <p>If you have thoughts on how to improve Dead or Alive, please reach out!</p>
+              </div>
+              <div className="mt-4 pt-4 border-t border-red-900/30">
+                <div className="flex items-center gap-4">
+                  <img src={BILL_PHOTO} alt="Bill Spencer" className="w-14 h-14 rounded-full object-cover border-2 border-red-600 shadow-lg" />
+                  <div>
+                    <p className="font-bold text-white text-base">Bill Spencer</p>
+                    <p className="text-red-400 italic text-sm">Idea Hamster</p>
+                    <a href="mailto:bspencer413@me.com" className="text-red-400 text-xs mt-1 block">bspencer413@me.com</a>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-red-900/30">
+                <div className="p-3 bg-gray-800/50 rounded-lg mb-3"><p className="font-medium text-gray-200 text-sm text-center">{user && user.email}</p></div>
+                <button onClick={doLogout} className="w-full py-3 bg-red-700 text-white rounded-lg text-base font-bold mb-3">Sign Out</button>
+                <div className="pt-3 border-t border-red-900/30">
+                  <button onClick={() => setShowDangerZone(!showDangerZone)} className="w-full py-2 text-gray-500 text-sm text-center">{showDangerZone ? 'Hide' : 'Account Removal'}</button>
+                  {showDangerZone && (
+                    <div className="mt-3 space-y-3">
+                      {!showDeleteConfirm
+                        ? <button onClick={() => setShowDeleteConfirm(true)} className="w-full py-3 bg-gray-900/70 border border-red-800 text-red-500 rounded-lg text-sm">Delete Account</button>
+                        : <div className="bg-red-950/90 border border-red-800 rounded-2xl p-5 space-y-3">
+                            <h3 className="font-bold text-red-400 text-lg">Are you sure?</h3>
+                            <p className="text-red-300 text-base">This will permanently delete your account and all watchlist data.</p>
+                            <button onClick={doDeleteAccount} className="w-full py-3 bg-red-700 text-white rounded-lg font-bold">Yes, Permanently Delete My Account</button>
+                            <button onClick={() => { setShowDeleteConfirm(false); setShowDangerZone(false); }} className="w-full py-3 bg-gray-800 border border-gray-600 text-gray-300 rounded-lg font-medium">Cancel</button>
+                          </div>
+                      }
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className={cardClass}>
+              <h3 className="font-bold text-white mb-1">Privacy Policy</h3>
+              <p className="text-gray-400 text-xs mb-3">Last updated: March 17, 2026</p>
+              <div className="space-y-3 text-gray-200 text-sm leading-relaxed">
+                <p><strong className="text-white">Information We Collect:</strong> Your email address, watchlist names, search queries, and anonymous usage data.</p>
+                <p><strong className="text-white">How We Use It:</strong> We do not sell your personal information. Ever.</p>
+                <p><strong className="text-white">Data Sources:</strong> Search results are powered by Legacy obituary feeds and Wikipedia.</p>
+                <p><strong className="text-white">Your Rights:</strong> You may delete your account and all data from this page at any time.</p>
+                <a href="mailto:bspencer413@me.com" className="text-red-400">bspencer413@me.com</a>
+              </div>
+            </div>
+            <p className="text-white/30 text-center text-xs pb-4">v{APP_VERSION}</p>
+          </div>
+        )}
 
-    return results
+      </div>
 
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
+      {/* NAV: 3 items - Watchlist (home), About, Bell */}
+      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(10,0,0,0.95)', backdropFilter: 'blur(8px)', borderTop: '1px solid #7f1d1d', padding: '0.5rem 1rem', paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+        <div className="flex justify-around max-w-sm mx-auto">
+          <button onClick={() => setPage('watchlist')} className={'flex flex-col items-center gap-0.5 px-3 py-1 ' + (page === 'watchlist' ? 'text-red-500' : 'text-gray-400')}>
+            <HeartIcon /><span className="text-xs font-medium">Watchlist</span>
+          </button>
+          <button onClick={() => setPage('about')} className={'flex flex-col items-center gap-0.5 px-3 py-1 ' + (page === 'about' ? 'text-red-500' : 'text-gray-400')}>
+            <InfoIcon /><span className="text-xs font-medium">About</span>
+          </button>
+          <button onClick={() => setPage('notifications')} className={'flex flex-col items-center gap-0.5 px-3 py-1 relative ' + (page === 'notifications' ? 'text-red-500' : 'text-gray-400')}>
+            <BellIcon red={unreadCount > 0} />
+            {unreadCount > 0 && <span className="absolute top-0 right-1 bg-red-600 text-white text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+            <span className="text-xs font-medium" style={unreadCount > 0 ? {color:'#dc2626'} : {}}>Alerts</span>
+          </button>
+        </div>
+        <p className="text-center text-gray-600 text-xs mt-1">app v{APP_VERSION} | api v{apiVersion}</p>
+      </div>
+    </PageWrapper>
+  );
+}
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class WatchlistItem(BaseModel):
-    name: str
-    location: Optional[str] = None
-    dob: Optional[str] = None
-
-class WatchlistResponse(BaseModel):
-    id: int
-    name: str
-    location: Optional[str]
-    dob: Optional[str]
-    status: str
-    created_at: str
-    is_deceased: Optional[bool] = False
-    wikipedia_description: Optional[str] = None
-    death_year: Optional[str] = None
-
-class ObituarySearch(BaseModel):
-    name: str
-    location: Optional[str] = None
-    birth_year: Optional[str] = None
-
-class ObituaryResult(BaseModel):
-    id: int
-    name: str
-    age: Optional[int]
-    location: Optional[str]
-    date: Optional[str]
-    source: str
-    link: Optional[str]
-    obit_text: Optional[str]
-    confidence: str
-
-app = FastAPI(title="Memory Watch API", version="1.4.9c")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid authentication")
-        return user_id
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-def calculate_confidence(search_name, found_name, search_loc, found_loc):
-    search_name = search_name.lower()
-    found_name = found_name.lower()
-    if search_name == found_name:
-        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
-            return "high"
-        return "medium"
-    if search_name in found_name or found_name in search_name:
-        return "medium"
-    return "low"
-
-def extract_age(text: str) -> Optional[int]:
-    match = re.search(r'\b(\d{1,3})\b', text)
-    if match:
-        age = int(match.group(1))
-        if 0 < age < 120:
-            return age
-    return None
-
-def extract_location(text: str) -> Optional[str]:
-    match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
-    if match:
-        return match.group(1)
-    return None
-
-@app.api_route("/health", methods=["GET", "HEAD"])
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "version": "1.4.9c"
-    }
-
-@app.get("/admin/stats")
-async def get_stats():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM obituaries")
-        obit_count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM death_records")
-        death_count = c.fetchone()[0]
-        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
-        recent = c.fetchall()
-        return {
-            "obituaries": obit_count,
-            "death_records": death_count,
-            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent],
-            "scraping": "suspended"
-        }
-
-@app.get("/admin/wiki-check-now")
-async def wiki_check_now():
-    threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
-    return {"message": "Wikipedia watchlist check started"}
-
-# Scraping endpoint suspended - code preserved
-# @app.get("/admin/scrape-now")
-# async def scrape_now():
-#     threading.Thread(target=scrape_obituaries, daemon=True).start()
-#     return {"message": "Scrape started"}
-
-@app.post("/auth/register", response_model=Token)
-async def register(user: UserCreate):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT id FROM users WHERE email = %s", (user.email,))
-        if c.fetchone():
-            raise HTTPException(status_code=400, detail="Email already registered")
-        password_hash = hash_password(user.password)
-        c.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-            (user.email, password_hash))
-        user_id = c.fetchone()[0]
-        conn.commit()
-        access_token = create_access_token(data={"sub": user_id})
-        return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/auth/login", response_model=Token)
-async def login(user: UserLogin):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
-        result = c.fetchone()
-        if not result or not verify_password(user.password, result[1]):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        access_token = create_access_token(data={"sub": result[0]})
-        return {"access_token": access_token, "token_type": "bearer"}
-
-@app.delete("/account")
-async def delete_account(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM notifications WHERE user_id = %s", (user_id,))
-        c.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
-        c.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        conn.commit()
-        return {"message": "Account permanently deleted"}
-
-@app.get("/watchlist", response_model=List[WatchlistResponse])
-async def get_watchlist(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, name, location, dob, status, created_at,
-                   is_deceased, wikipedia_description, death_year
-            FROM watchlist
-            WHERE user_id = %s AND status = 'active'
-            ORDER BY created_at DESC
-        """, (user_id,))
-        items = []
-        for row in c.fetchall():
-            items.append({
-                "id": row[0], "name": row[1], "location": row[2],
-                "dob": row[3], "status": row[4], "created_at": str(row[5]),
-                "is_deceased": row[6] or False,
-                "wikipedia_description": row[7],
-                "death_year": row[8]
-            })
-        return items
-
-@app.post("/watchlist")
-async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO watchlist (user_id, name, location, dob)
-            VALUES (%s, %s, %s, %s) RETURNING id
-        """, (user_id, item.name, item.location, item.dob))
-        conn.commit()
-        item_id = c.fetchone()[0]
-        return {"message": "Added to watchlist", "id": item_id}
-
-@app.delete("/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute(
-            "UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
-            (item_id, user_id))
-        conn.commit()
-        if c.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Item not found")
-        return {"message": "Removed from watchlist"}
-
-@app.get("/watchlist/{item_id}/refresh")
-async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_current_user)):
-    """Live refresh - checks Wikipedia + Legacy for latest status. Called when user taps a name."""
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT w.id, w.name, w.is_deceased, u.email
-            FROM watchlist w
-            JOIN users u ON w.user_id = u.id
-            WHERE w.id = %s AND w.user_id = %s AND w.status = 'active'
-        """, (item_id, user_id))
-        row = c.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Watchlist item not found")
-        watch_id, watch_name, was_deceased, user_email = row
-        wiki_ok = False
-        extract = ""
-        description = ""
-        death_date = None
-        thumbnail = None
-        birth_date = None
-        is_deceased = False
-
-        try:
-            normalized_watch_name = normalize_name_for_wiki(watch_name)
-            print("[refresh] Smart lookup for: " + normalized_watch_name + " (stored: " + watch_name + ")")
-            wiki_data = fetch_wiki_data_smart(normalized_watch_name)
-            extract = wiki_data.get("extract", "")
-            description = wiki_data.get("description", "")
-            death_date = extract_full_death_date(wiki_data)
-            if wiki_data.get("thumbnail"):
-                thumbnail = wiki_data["thumbnail"].get("source")
-            birth_date = wiki_data.get("birth_date", None)
-            is_deceased = is_deceased_from_wiki(wiki_data)
-            wiki_ok = True
-            print("[refresh] " + watch_name + " is_deceased=" + str(is_deceased) + " type=" + str(wiki_data.get("type")))
-        except Exception as e:
-            print("[refresh] Wikipedia fetch failed for " + watch_name + ": " + str(e))
-            is_deceased = was_deceased or False
-
-        # Check Legacy one-off
-        legacy_results = search_legacy_oneoff(watch_name)
-
-        # If Legacy finds an obit and wiki didn't catch death, mark deceased
-        if legacy_results and not is_deceased:
-            is_deceased = True
-            print("[refresh] Legacy obit found for " + watch_name)
-
-        # Always update the watchlist row if wiki succeeded
-        if wiki_ok or legacy_results:
-            c.execute("""
-                UPDATE watchlist
-                SET is_deceased = %s,
-                    wikipedia_description = %s,
-                    death_year = %s,
-                    wiki_last_checked = %s
-                WHERE id = %s
-            """, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
-            conn.commit()
-
-        # Create notification if deceased and no notification exists yet for this person
-        # Use is_deceased (current state) not was_deceased comparison, to catch cases
-        # where DB was stale (person died but DB not yet updated)
-        if is_deceased:
-            c.execute(
-                "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
-                (watch_id, "%Wikipedia%"))
-            if not c.fetchone():
-                death_info = " Died: " + str(death_date) if death_date else ""
-                message = "Wikipedia reports " + watch_name + " has passed away." + death_info
-                c.execute("""
-                    INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
-                    VALUES (%s, %s, 1, %s, %s)
-                """, (user_id, watch_id, message, False))
-                conn.commit()
-                print("[refresh] Notification created for " + watch_name + death_info)
-                if user_email:
-                    wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
-                    sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
-                    if sent:
-                        c.execute(
-                            "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s",
-                            (watch_id, "%Wikipedia%"))
-                        conn.commit()
-
-        # Log what we found for debugging
-        # Ensure thumbnail is a string URL not a dict
-        thumb_url = None
-        if isinstance(thumbnail, dict):
-            thumb_url = thumbnail.get("source")
-        elif isinstance(thumbnail, str):
-            thumb_url = thumbnail
-        print("[refresh] Result: " + watch_name + " is_deceased=" + str(is_deceased) + " has_thumbnail=" + str(thumbnail is not None) + " has_extract=" + str(len(extract) > 0))
-        return {
-            "id": watch_id,
-            "name": watch_name,
-            "is_deceased": is_deceased,
-            "wikipedia_description": extract,
-            "death_year": death_date,
-            "death_date": death_date,
-            "description": description,
-            "thumbnail": thumb_url,
-            "birth_date": birth_date,
-            "newly_deceased": is_deceased and not was_deceased,
-            "legacy_results": legacy_results
-        }
-
-@app.get("/admin/test-refresh/{name}")
-async def test_refresh(name: str):
-    """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
-    try:
-        data = fetch_wiki_data(name)
-        is_deceased = is_deceased_from_wiki(data)
-        return {
-            "name": name,
-            "is_deceased": is_deceased,
-            "death_date": data.get("death_date"),
-            "description": data.get("description"),
-            "extract_first_sentence": (data.get("extract") or "").split(".")[0],
-            "type": data.get("type"),
-            "wiki_ok": True
-        }
-    except Exception as e:
-        return {"name": name, "wiki_ok": False, "error": str(e)}
-
-@app.get("/legacy/search")
-async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
-    try:
-        normalized = normalize_name(name)
-        results = search_legacy_oneoff(normalized)
-        return {"name": normalized, "results": results or [], "count": len(results or [])}
-    except Exception as e:
-        print("Legacy search error: " + str(e))
-        return {"name": name, "results": [], "count": 0}
-
-@app.post("/search", response_model=List[ObituaryResult])
-async def search_obituaries(search: ObituarySearch):
-    """Search our local obituaries DB - kept for backwards compatibility."""
-    with get_db() as conn:
-        c = conn.cursor()
-        results = []
-        name = search.name.strip()
-        if not name:
-            return results
-        search_normalized = normalize_name(name)
-        query = """SELECT id, name, name_normalized, age, location, date, source, link, obit_text
-                   FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s"""
-        params = ["%" + name + "%", "%" + search_normalized + "%"]
-        # NOTE: location not used as a filter - our scraped data has unreliable location fields
-        # birth_year filter kept as it is date-based and more reliable
-        if search.birth_year:
-            query += " AND date LIKE %s"
-            params.append("%" + search.birth_year + "%")
-        query += " ORDER BY scraped_at DESC LIMIT 20"
-        c.execute(query, params)
-        for row in c.fetchall():
-            try:
-                confidence = calculate_confidence(name, row[1] or "", search.location, row[4])
-                results.append({
-                    "id": row[0], "name": row[1] or "",
-                    "age": row[3], "location": row[4], "date": row[5],
-                    "source": "Legacy", "link": row[7],
-                    "obit_text": row[8] if len(row) > 8 else None,
-                    "confidence": confidence
-                })
-            except Exception as e:
-                print("Error processing search result: " + str(e))
-                continue
-        return results
-
-@app.get("/notifications")
-async def get_notifications(user_id: int = Depends(get_current_user)):
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT n.id, n.message, n.created_at, w.name,
-                   COALESCE(o.link, '') as link
-            FROM notifications n
-            JOIN watchlist w ON n.watchlist_id = w.id
-            LEFT JOIN obituaries o ON n.obituary_id = o.id
-            WHERE n.user_id = %s
-            ORDER BY n.created_at DESC LIMIT 50
-        """, (user_id,))
-        notifications = []
-        for row in c.fetchall():
-            notifications.append({
-                "id": row[0], "name": row[3],
-                "message": row[1], "created_at": str(row[2]),
-                "link": row[4] or ""
-            })
-        return notifications
-
-def check_wikipedia_watchlist():
-    """Background job - runs every 6 hours. Checks Wikipedia for all watchlist entries."""
-    print("[" + str(datetime.now()) + "] Starting Wikipedia watchlist check...")
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT w.id, w.user_id, w.name, u.email, w.is_deceased
-            FROM watchlist w
-            JOIN users u ON w.user_id = u.id
-            WHERE w.status = 'active'
-        """)
-        watchlist_items = c.fetchall()
-        updated = 0
-        notified = 0
-        for watch in watchlist_items:
-            watch_id, user_id, watch_name, user_email, was_deceased = watch
-            try:
-                normalized_name = normalize_name_for_wiki(watch_name)
-                data = fetch_wiki_data_smart(normalized_name)
-                if data.get("type") == "disambiguation":
-                    continue
-                extract = data.get("extract", "")
-                death_date = extract_full_death_date(data)
-                is_deceased = is_deceased_from_wiki(data)
-                c.execute("""
-                    UPDATE watchlist
-                    SET is_deceased = %s,
-                        wikipedia_description = %s,
-                        death_year = %s,
-                        wiki_last_checked = %s
-                    WHERE id = %s
-                """, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
-                conn.commit()
-                updated += 1
-                if is_deceased:
-                    c.execute(
-                        "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
-                        (watch_id, "%Wikipedia%"))
-                    if not c.fetchone():
-                        death_info = " Died: " + str(death_date) if death_date else ""
-                        message = "Wikipedia reports " + watch_name + " has passed away." + death_info
-                        c.execute("""
-                            INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
-                            VALUES (%s, %s, 1, %s, %s)
-                        """, (user_id, watch_id, message, False))
-                        conn.commit()
-                        notified += 1
-                        if user_email:
-                            wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
-                            sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
-                            if sent:
-                                c.execute(
-                                    "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s",
-                                    (watch_id, "%Wikipedia%"))
-                                conn.commit()
-                time.sleep(0.5)
-            except Exception as e:
-                print("Wiki check error for " + watch_name + ": " + str(e))
-                continue
-    print("[" + str(datetime.now()) + "] Wikipedia check complete. " + str(updated) + " updated, " + str(notified) + " notified.")
-
-# SCRAPER CODE SUSPENDED - preserved for future re-activation
-# def scrape_obituaries():
-#     import feedparser
-#     print("[" + str(datetime.now()) + "] Starting obituary scrape...")
-#     total = 0
-#     with get_db() as conn:
-#         c = conn.cursor()
-#         for feed_url in OBITUARY_FEEDS:
-#             try:
-#                 feed = feedparser.parse(feed_url)
-#                 count = 0
-#                 for entry in feed.entries:
-#                     title = " ".join(entry.get("title", "").strip().split())
-#                     link = entry.get("link", "")
-#                     published = entry.get("published", "")
-#                     obit_text = entry.get("summary", "") or entry.get("description", "")
-#                     obit_text = re.sub(r"<[^>]+>", "", obit_text).strip()
-#                     if not title or len(title) < 3:
-#                         continue
-#                     if link:
-#                         c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
-#                         if c.fetchone():
-#                             continue
-#                     name_normalized = normalize_name(title)
-#                     age = extract_age(title)
-#                     location = extract_location(title)
-#                     c.execute("""
-#                         INSERT INTO obituaries (name, name_normalized, age, location, date, source, link, obit_text)
-#                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-#                     """, (title, name_normalized, age, location, published, feed_url, link, obit_text))
-#                     count += 1
-#                 conn.commit()
-#                 total += count
-#                 print("  " + feed_url + ": " + str(count) + " new entries")
-#             except Exception as e:
-#                 print("  ERROR " + feed_url + ": " + str(e))
-#     print("[" + str(datetime.now()) + "] Scrape complete. " + str(total) + " new obituaries added.")
-#     check_watchlist_matches()
-
-# def check_watchlist_matches():
-#     with get_db() as conn:
-#         c = conn.cursor()
-#         c.execute("""
-#             SELECT w.id, w.user_id, w.name, u.email
-#             FROM watchlist w
-#             JOIN users u ON w.user_id = u.id
-#             WHERE w.status = 'active'
-#         """)
-#         watchlist_items = c.fetchall()
-#         for watch in watchlist_items:
-#             watch_id, user_id, watch_name, user_email = watch
-#             watch_normalized = normalize_name(watch_name)
-#             c.execute("""SELECT id, name, location, link FROM obituaries
-#                 WHERE name ILIKE %s OR name_normalized ILIKE %s""",
-#                 ("%" + watch_name + "%", "%" + watch_normalized + "%"))
-#             matches = c.fetchall()
-#             for obit in matches:
-#                 obit_id, obit_name, obit_location, obit_link = obit
-#                 c.execute(
-#                     "SELECT id FROM notifications WHERE watchlist_id = %s AND obituary_id = %s",
-#                     (watch_id, obit_id))
-#                 if not c.fetchone():
-#                     message = "Possible match found: " + obit_name + " in " + (obit_location or "unknown location")
-#                     c.execute("""
-#                         INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
-#                         VALUES (%s, %s, %s, %s, %s)
-#                     """, (user_id, watch_id, obit_id, message, False))
-#                     conn.commit()
-#                     if user_email:
-#                         sent = send_email_notification(user_email, watch_name, obit_name, obit_location, obit_link)
-#                         if sent:
-#                             c.execute(
-#                                 "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND obituary_id = %s",
-#                                 (watch_id, obit_id))
-#                             conn.commit()
-
-def run_scheduler():
-    schedule.every(6).hours.do(check_wikipedia_watchlist)
-    # schedule.every(15).minutes.do(scrape_obituaries)  # suspended
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    print("Database initialized")
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    print("Background scheduler started (wiki-check: 6hr, scraping: suspended)")
-    threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
-    print("Initial Wikipedia watchlist check started")
-    # threading.Thread(target=scrape_obituaries, daemon=True).start()  # suspended
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
