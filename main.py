@@ -372,27 +372,70 @@ def fetch_wiki_data(name: str) -> dict:
         "birth_date": birth_date,
     }
 
+def normalize_name_for_wiki(name: str) -> str:
+    # Add period after single-letter middle initials if missing
+    # "Robert S Mueller" -> "Robert S. Mueller"
+    words = name.strip().split()
+    result = []
+    for i, word in enumerate(words):
+        if len(word) == 1 and word.isalpha() and i > 0 and i < len(words) - 1:
+            result.append(word + ".")
+        else:
+            result.append(word)
+    return " ".join(result)
+
 def fetch_wiki_data_smart(name: str) -> dict:
     # Try direct lookup first
     data = fetch_wiki_data(name)
     if data.get("type") != "disambiguation" and data.get("extract"):
         return data
-    # If disambiguation or not found, use Wikipedia search to find best match
+    # If disambiguation or not found, use Wikipedia REST summary API with the search title
+    # The REST summary API resolves redirects and handles ambiguous names better
     search_url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(name) + "&srlimit=5&format=json&origin=*"
     req = urllib.request.Request(search_url, headers={"User-Agent": "MemoryWatch/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         search_data = json_lib.loads(resp.read().decode())
     results = search_data.get("query", {}).get("search", [])
+    # Extract last name from search name for matching
+    name_parts = name.strip().split()
+    last_name = name_parts[-1].lower() if name_parts else ""
+    first_name = name_parts[0].lower() if name_parts else ""
+
     for result in results:
         title = result.get("title", "")
-        if "(disambiguation)" in title:
+        if "(disambiguation)" in title.lower():
+            continue
+        # Require last name to appear in result title
+        if last_name and last_name not in title.lower():
+            print("[wiki_smart] Skipping " + title + " - last name mismatch for " + name)
             continue
         try:
-            candidate = fetch_wiki_data(title)
+            # Use REST summary API for the resolved title - handles redirects cleanly
+            sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title)
+            sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
+            with urllib.request.urlopen(sum_req, timeout=15) as sum_resp:
+                sum_data = json_lib.loads(sum_resp.read().decode())
+            if sum_data.get("type") == "disambiguation":
+                continue
+            if not sum_data.get("extract"):
+                continue
+            # Now get full data via action API using the resolved title
+            resolved_title = sum_data.get("title", title)
+            print("[wiki_smart] " + name + " resolved to: " + resolved_title)
+            candidate = fetch_wiki_data(resolved_title)
             if candidate.get("type") != "disambiguation" and candidate.get("extract"):
-                print("[wiki_smart] " + name + " resolved via search to: " + title)
+                # Merge thumbnail/birth_date/death_date from summary if action API missed them
+                if not candidate.get("thumbnail") and sum_data.get("thumbnail"):
+                    candidate["thumbnail"] = sum_data["thumbnail"]
+                if not candidate.get("death_date") and sum_data.get("death_date"):
+                    candidate["death_date"] = sum_data["death_date"]
+                if not candidate.get("birth_date") and sum_data.get("birth_date"):
+                    candidate["birth_date"] = sum_data["birth_date"]
+                if not candidate.get("description") and sum_data.get("description"):
+                    candidate["description"] = sum_data["description"]
                 return candidate
-        except Exception:
+        except Exception as e:
+            print("[wiki_smart] Error fetching " + title + ": " + str(e))
             continue
     return data
 
@@ -548,7 +591,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.4.9")
+app = FastAPI(title="Memory Watch API", version="1.4.9b")
 
 app.add_middleware(
     CORSMiddleware,
@@ -615,7 +658,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.4.9"
+        "version": "1.4.9b"
     }
 
 @app.get("/admin/stats")
@@ -753,8 +796,9 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
         is_deceased = False
 
         try:
-            print("[refresh] Smart lookup for: " + watch_name)
-            wiki_data = fetch_wiki_data_smart(watch_name)
+            normalized_watch_name = normalize_name_for_wiki(watch_name)
+            print("[refresh] Smart lookup for: " + normalized_watch_name + " (stored: " + watch_name + ")")
+            wiki_data = fetch_wiki_data_smart(normalized_watch_name)
             extract = wiki_data.get("extract", "")
             description = wiki_data.get("description", "")
             death_date = wiki_data.get("death_date", None)
@@ -803,7 +847,7 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                     VALUES (%s, %s, 1, %s, %s)
                 """, (user_id, watch_id, message, False))
                 conn.commit()
-                print("[refresh] Notification created for " + watch_name)
+                print("[refresh] Notification created for " + watch_name + death_info)
                 if user_email:
                     wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
                     sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
@@ -813,12 +857,15 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                             (watch_id, "%Wikipedia%"))
                         conn.commit()
 
+        # Log what we found for debugging
+        print("[refresh] Result: " + watch_name + " is_deceased=" + str(is_deceased) + " has_thumbnail=" + str(thumbnail is not None) + " has_extract=" + str(len(extract) > 0))
         return {
             "id": watch_id,
             "name": watch_name,
             "is_deceased": is_deceased,
             "wikipedia_description": extract,
             "death_year": death_date,
+            "death_date": death_date,
             "description": description,
             "thumbnail": thumbnail,
             "birth_date": birth_date,
@@ -925,7 +972,8 @@ def check_wikipedia_watchlist():
         for watch in watchlist_items:
             watch_id, user_id, watch_name, user_email, was_deceased = watch
             try:
-                data = fetch_wiki_data_smart(watch_name)
+                normalized_name = normalize_name_for_wiki(watch_name)
+                data = fetch_wiki_data_smart(normalized_name)
                 if data.get("type") == "disambiguation":
                     continue
                 extract = data.get("extract", "")
