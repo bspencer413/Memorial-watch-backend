@@ -285,18 +285,129 @@ def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, 
         return False
 
 def fetch_wiki_data(name: str) -> dict:
-    url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(name)
+    # Use action API with redirects - bypasses summary cache, gets current article data
+    params = urllib.parse.urlencode({
+        "action": "query",
+        "titles": name,
+        "prop": "extracts|pageprops|categories|info",
+        "exintro": "true",
+        "explaintext": "true",
+        "redirects": "1",
+        "inprop": "url",
+        "cllimit": "50",
+        "format": "json"
+    })
+    url = "https://en.wikipedia.org/w/api.php?" + params
     req = urllib.request.Request(url, headers={"User-Agent": "MemoryWatch/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return json_lib.loads(resp.read().decode())
+        data = json_lib.loads(resp.read().decode())
+
+    pages = data.get("query", {}).get("pages", {})
+    if not pages:
+        return {}
+
+    page = list(pages.values())[0]
+    if "missing" in page:
+        return {}
+
+    title = page.get("title", name)
+    extract = page.get("extract", "")
+
+    # Check categories for death - "2026 deaths", "2025 deaths" etc.
+    categories = [c.get("title", "") for c in page.get("categories", [])]
+    death_year_from_cat = None
+    for cat in categories:
+        m = re.search(r"(\d{4}) deaths", cat)
+        if m:
+            death_year_from_cat = m.group(1)
+            break
+
+    death_from_category = any(
+        any(word in cat.lower() for word in ["deaths", "murdered", "executed"])
+        for cat in categories
+    )
+
+    # Check for disambiguation
+    page_type = "standard"
+    if "disambiguation" in page.get("pageprops", {}):
+        page_type = "disambiguation"
+    elif "(disambiguation)" in title:
+        page_type = "disambiguation"
+
+    # Build summary description from extract
+    description = ""
+    if extract:
+        first_sent = extract.split(".")[0]
+        description = first_sent[:150] if first_sent else ""
+
+    # Also try summary API for thumbnail and birth/death dates
+    thumbnail = None
+    birth_date = None
+    death_date_summary = None
+    try:
+        sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title)
+        sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
+        with urllib.request.urlopen(sum_req, timeout=10) as sum_resp:
+            sum_data = json_lib.loads(sum_resp.read().decode())
+            thumb = sum_data.get("thumbnail")
+            thumbnail = thumb.get("source") if thumb else None
+            birth_date = sum_data.get("birth_date")
+            death_date_summary = sum_data.get("death_date")
+            if sum_data.get("description"):
+                description = sum_data.get("description")
+    except Exception:
+        pass
+
+    # Use death_date from summary if available, otherwise from categories
+    death_date = death_date_summary or death_year_from_cat
+
+    return {
+        "title": title,
+        "extract": extract,
+        "description": description,
+        "type": page_type,
+        "death_date": death_date,
+        "death_from_category": death_from_category,
+        "thumbnail": thumbnail,
+        "birth_date": birth_date,
+    }
+
+def fetch_wiki_data_smart(name: str) -> dict:
+    # Try direct lookup first
+    data = fetch_wiki_data(name)
+    if data.get("type") != "disambiguation" and data.get("extract"):
+        return data
+    # If disambiguation or not found, use Wikipedia search to find best match
+    search_url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(name) + "&srlimit=5&format=json&origin=*"
+    req = urllib.request.Request(search_url, headers={"User-Agent": "MemoryWatch/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        search_data = json_lib.loads(resp.read().decode())
+    results = search_data.get("query", {}).get("search", [])
+    for result in results:
+        title = result.get("title", "")
+        if "(disambiguation)" in title:
+            continue
+        try:
+            candidate = fetch_wiki_data(title)
+            if candidate.get("type") != "disambiguation" and candidate.get("extract"):
+                print("[wiki_smart] " + name + " resolved via search to: " + title)
+                return candidate
+        except Exception:
+            continue
+    return data
 
 def is_deceased_from_wiki(data: dict) -> bool:
     extract = data.get("extract", "")
     description = data.get("description", "")
     death_date = data.get("death_date", None)
     page_type = data.get("type", "")
+    death_from_category = data.get("death_from_category", False)
+
     if page_type == "disambiguation":
         return False
+    # Death year in category (e.g. "2026 deaths") is most reliable signal
+    if death_from_category:
+        return True
     if death_date:
         return True
     first_sentence = extract.split(".")[0] if extract else ""
@@ -306,41 +417,92 @@ def is_deceased_from_wiki(data: dict) -> bool:
         return True
     if re.search(r"\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)", first_sentence):
         return False
-    if re.search(r"\b(died|death|passed away|deceased)\b", extract, re.IGNORECASE):
+    if re.search(r"(died|death|passed away|deceased)", extract, re.IGNORECASE):
         return True
-    if re.search(r"\b(died|death|deceased)\b", description, re.IGNORECASE):
+    if re.search(r"(died|death|deceased)", description, re.IGNORECASE):
         return True
     return False
 
 def search_legacy_oneoff(name: str) -> list:
     """
-    One-off Legacy.com search by name.
-    Uses their RSS search feed - same format as our scraper feeds.
-    Returns list of obit dicts with name, date, location, link, obit_text.
+    One-off Legacy.com search - hits their search page directly.
+    Falls back to searching our local scraped DB if Legacy is unavailable.
     """
+    results = []
+
+    # Try Legacy.com search directly
     try:
-        name_encoded = urllib.parse.quote(name)
-        url = "https://www.legacy.com/api/_frontend/search?firstName=" + urllib.parse.quote(name.split()[0] if name.split() else name) + "&lastName=" + urllib.parse.quote(name.split()[-1] if len(name.split()) > 1 else "") + "&type=obituary&limit=5"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept": "application/json"
+        parts = name.strip().split()
+        first = parts[0] if parts else name
+        last = parts[-1] if len(parts) > 1 else ""
+        search_url = (
+            "https://www.legacy.com/obituaries/search?firstName=" +
+            urllib.parse.quote(first) +
+            "&lastName=" + urllib.parse.quote(last)
+        )
+        req = urllib.request.Request(search_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
         })
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json_lib.loads(resp.read().decode())
-            results = []
-            entries = data.get("entries", data.get("results", data.get("obituaries", [])))
-            for entry in entries[:5]:
-                results.append({
-                    "name": entry.get("name", entry.get("fullName", name)),
-                    "date": entry.get("deathDate", entry.get("publishDate", "")),
-                    "location": entry.get("locationName", entry.get("city", "")),
-                    "link": entry.get("url", entry.get("obitUrl", "")),
-                    "obit_text": entry.get("snippet", entry.get("summary", ""))
-                })
-            return results
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+            # Extract obit entries from the HTML using simple patterns
+            import re as _re
+            # Look for JSON-LD structured data
+            json_ld_matches = _re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, _re.DOTALL)
+            for match in json_ld_matches[:5]:
+                try:
+                    obj = json_lib.loads(match)
+                    if isinstance(obj, list):
+                        for item in obj:
+                            if item.get("@type") in ["Person", "Obituary"]:
+                                results.append({
+                                    "name": item.get("name", name),
+                                    "date": item.get("deathDate", ""),
+                                    "location": item.get("address", {}).get("addressLocality", "") if isinstance(item.get("address"), dict) else "",
+                                    "link": item.get("url", search_url),
+                                    "obit_text": item.get("description", "")
+                                })
+                    elif isinstance(obj, dict) and obj.get("@type") in ["Person", "Obituary"]:
+                        results.append({
+                            "name": obj.get("name", name),
+                            "date": obj.get("deathDate", ""),
+                            "location": obj.get("address", {}).get("addressLocality", "") if isinstance(obj.get("address"), dict) else "",
+                            "link": obj.get("url", search_url),
+                            "obit_text": obj.get("description", "")
+                        })
+                except Exception:
+                    continue
+            if results:
+                print("Legacy direct search found " + str(len(results)) + " results for " + name)
+                return results[:5]
     except Exception as e:
-        print("Legacy one-off search error: " + str(e))
-        return []
+        print("Legacy direct search error: " + str(e))
+
+    # Fallback: search our local scraped DB
+    try:
+        from contextlib import contextmanager as _cm
+        normalized = normalize_name(name)
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT name, location, date, link, obit_text FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s ORDER BY scraped_at DESC LIMIT 5",
+                ("%" + name + "%", "%" + normalized + "%")
+            )
+            for row in c.fetchall():
+                results.append({
+                    "name": row[0] or name,
+                    "date": row[2] or "",
+                    "location": row[1] or "",
+                    "link": row[3] or "",
+                    "obit_text": row[4] or ""
+                })
+        if results:
+            print("Legacy DB fallback found " + str(len(results)) + " results for " + name)
+    except Exception as e:
+        print("Legacy DB fallback error: " + str(e))
+
+    return results
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -386,7 +548,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.4.8")
+app = FastAPI(title="Memory Watch API", version="1.4.9")
 
 app.add_middleware(
     CORSMiddleware,
@@ -453,7 +615,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.4.8"
+        "version": "1.4.9"
     }
 
 @app.get("/admin/stats")
@@ -591,20 +753,8 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
         is_deceased = False
 
         try:
-            # Always use first+last for Wikipedia - broader, handles middle names/initials
-            clean_parts = [p.replace(".", "") for p in watch_name.split() if len(p.replace(".", "")) > 1]
-            wiki_lookup = (clean_parts[0] + " " + clean_parts[-1]) if len(clean_parts) >= 2 else watch_name
-            print("[refresh] Looking up wiki: " + wiki_lookup + " (stored name: " + watch_name + ")")
-            wiki_data = fetch_wiki_data(wiki_lookup)
-            # If still disambiguation with first+last, also try full stored name
-            if wiki_data.get("type") == "disambiguation" and wiki_lookup != watch_name:
-                try:
-                    wiki_data2 = fetch_wiki_data(watch_name)
-                    if wiki_data2.get("type") != "disambiguation" and wiki_data2.get("extract"):
-                        wiki_data = wiki_data2
-                        print("[refresh] Full name resolved: " + watch_name)
-                except Exception:
-                    pass
+            print("[refresh] Smart lookup for: " + watch_name)
+            wiki_data = fetch_wiki_data_smart(watch_name)
             extract = wiki_data.get("extract", "")
             description = wiki_data.get("description", "")
             death_date = wiki_data.get("death_date", None)
@@ -741,10 +891,11 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
-            SELECT n.id, n.message, n.created_at, w.name, o.link
+            SELECT n.id, n.message, n.created_at, w.name,
+                   COALESCE(o.link, '') as link
             FROM notifications n
             JOIN watchlist w ON n.watchlist_id = w.id
-            JOIN obituaries o ON n.obituary_id = o.id
+            LEFT JOIN obituaries o ON n.obituary_id = o.id
             WHERE n.user_id = %s
             ORDER BY n.created_at DESC LIMIT 50
         """, (user_id,))
@@ -753,7 +904,7 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
             notifications.append({
                 "id": row[0], "name": row[3],
                 "message": row[1], "created_at": str(row[2]),
-                "link": row[4]
+                "link": row[4] or ""
             })
         return notifications
 
@@ -774,23 +925,9 @@ def check_wikipedia_watchlist():
         for watch in watchlist_items:
             watch_id, user_id, watch_name, user_email, was_deceased = watch
             try:
-                # Strip middle names for broader Wikipedia match
-                clean_parts = [p.replace(".","") for p in watch_name.split() if len(p.replace(".","")) > 1]
-                wiki_lookup = (clean_parts[0] + " " + clean_parts[-1]) if len(clean_parts) >= 2 else watch_name
-                data = fetch_wiki_data(wiki_lookup)
+                data = fetch_wiki_data_smart(watch_name)
                 if data.get("type") == "disambiguation":
-                    # Try full stored name as fallback
-                    if wiki_lookup != watch_name:
-                        try:
-                            data2 = fetch_wiki_data(watch_name)
-                            if data2.get("type") != "disambiguation" and data2.get("extract"):
-                                data = data2
-                            else:
-                                continue
-                        except Exception:
-                            continue
-                    else:
-                        continue
+                    continue
                 extract = data.get("extract", "")
                 death_date = data.get("death_date", None)
                 is_deceased = is_deceased_from_wiki(data)
