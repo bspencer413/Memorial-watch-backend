@@ -407,10 +407,12 @@ def fetch_wiki_data_smart(name: str) -> dict:
             # Skip disambiguation pages
             if "(disambiguation)" in title_lower:
                 continue
-            # Must contain both first AND last name
+            # Must contain last name
             if last_name and last_name not in title_lower:
                 continue
+            # Must contain first name -- prevents Michael Blatty matching William Blatty
             if first_name and first_name not in title_lower:
+                print("[wiki_smart] Skipping " + title + " - first name mismatch (want " + first_name + ")")
                 continue
             try:
                 candidate = fetch_wiki_data(title)
@@ -604,7 +606,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.1")
+app = FastAPI(title="Memory Watch API", version="1.5.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -671,7 +673,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.1"
+        "version": "1.5.2"
     }
 
 @app.get("/admin/stats")
@@ -902,6 +904,18 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             "legacy_results": legacy_results
         }
 
+@app.delete("/notifications/{notif_id}")
+async def delete_notification(notif_id: int, user_id: int = Depends(get_current_user)):
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM notifications WHERE id = %s AND user_id = %s", (notif_id, user_id))
+            conn.commit()
+        return {"deleted": True}
+    except Exception as e:
+        print("Delete notification error: " + str(e))
+        return {"deleted": False}
+
 @app.get("/admin/test-refresh/{name}")
 async def test_refresh(name: str):
     """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
@@ -971,7 +985,7 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
         c = conn.cursor()
         c.execute("""
             SELECT n.id, n.message, n.created_at, w.name,
-                   COALESCE(o.link, '') as link
+                   COALESCE(o.link, '') as link, n.watchlist_id
             FROM notifications n
             JOIN watchlist w ON n.watchlist_id = w.id
             LEFT JOIN obituaries o ON n.obituary_id = o.id
@@ -983,7 +997,8 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
             notifications.append({
                 "id": row[0], "name": row[3],
                 "message": row[1], "created_at": str(row[2]),
-                "link": row[4] or ""
+                "link": row[4] or "",
+                "watchlist_id": row[5]
             })
         return notifications
 
