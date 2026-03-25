@@ -612,7 +612,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.4")
+app = FastAPI(title="Memory Watch API", version="1.5.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -679,7 +679,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.4"
+        "version": "1.5.5"
     }
 
 @app.get("/admin/stats")
@@ -892,7 +892,7 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                 "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
                 (watch_id, "%Wikipedia%"))
             if not c.fetchone():
-                death_info = " Died: " + str(death_date) if death_date else ""
+                death_info = (" Died: " + str(death_date)) if death_date else ("" if not extract_full_death_date(wiki_data) else " Died: " + extract_full_death_date(wiki_data))
                 message = "Wikipedia reports " + watch_name + " has passed away." + death_info
                 c.execute("""
                     INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
@@ -1136,7 +1136,7 @@ def check_wikipedia_watchlist():
                         "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
                         (watch_id, "%Wikipedia%"))
                     if not c.fetchone():
-                        death_info = " Died: " + str(death_date) if death_date else ""
+                        death_info = (" Died: " + str(death_date)) if death_date else ("" if not extract_full_death_date(data) else " Died: " + extract_full_death_date(data))
                         message = "Wikipedia reports " + watch_name + " has passed away." + death_info
                         c.execute("""
                             INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
