@@ -432,26 +432,32 @@ def fetch_wiki_data_smart(name: str) -> dict:
 
 
 def extract_full_death_date(data: dict) -> str:
-    if data.get("death_date"):
-        return str(data["death_date"])
-    extract = data.get("extract", "")
-    description = data.get("description", "")
     import re as _re
     month_names = "January|February|March|April|May|June|July|August|September|October|November|December"
-    pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
-    matches = _re.findall(pattern, extract)
+    full_date_pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
+    extract = data.get("extract", "")
+    description = data.get("description", "")
+    # Try extract text first - most reliable source for full date
+    matches = _re.findall(full_date_pattern, extract)
     if len(matches) >= 2:
-        return matches[-1]
+        return matches[-1]  # Last date = death date
     if len(matches) == 1:
         first_sentence = extract.split(".")[0]
         if _re.search(r"died|death|passed|\u2013|\u2014", first_sentence, _re.IGNORECASE):
             return matches[0]
+    # Try death_date field - only use if it looks like a full date not just a year
+    death_date = data.get("death_date", "")
+    if death_date and _re.search(full_date_pattern, str(death_date)):
+        return str(death_date)
+    # Fall back to year from description or category
     m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", description)
     if m:
         return m.group(1)
     m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", extract.split(".")[0] if extract else "")
     if m:
         return m.group(1)
+    if death_date:
+        return str(death_date)
     return data.get("death_year_from_cat", "") or ""
 
 def is_deceased_from_wiki(data: dict) -> bool:
@@ -606,7 +612,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.3")
+app = FastAPI(title="Memory Watch API", version="1.5.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -673,7 +679,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.3"
+        "version": "1.5.4"
     }
 
 @app.get("/admin/stats")
@@ -951,15 +957,86 @@ async def test_refresh(name: str):
     except Exception as e:
         return {"name": name, "wiki_ok": False, "error": str(e)}
 
+@app.get("/ssdi/search")
+async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(get_current_user)):
+    try:
+        # FamilySearch SSDI search - public SSA Death Master File data (deaths through ~2014)
+        parts = name.strip().split()
+        first = parts[0] if parts else name
+        last = parts[-1] if len(parts) > 1 else ""
+        params = urllib.parse.urlencode({
+            "q.givenName": first,
+            "q.familyName": last,
+            "collection_id": "1202535",  # US Social Security Death Index collection
+            "count": "20",
+            "start": "0"
+        })
+        url = "https://api.familysearch.org/platform/tree/search?" + params
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "MemoryWatch/1.0",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json_lib.loads(resp.read().decode())
+        results = []
+        entries = data.get("entries", [])
+        for entry in entries:
+            content = entry.get("content", {}).get("gedcomx", {})
+            persons = content.get("persons", [])
+            for person in persons:
+                facts = person.get("facts", [])
+                birth_year_val = None
+                death_year_val = None
+                death_date_str = ""
+                birth_date_str = ""
+                for fact in facts:
+                    fact_type = fact.get("type", "")
+                    date_val = fact.get("date", {}).get("original", "")
+                    if "Birth" in fact_type:
+                        birth_date_str = date_val
+                        if date_val:
+                            m = re.search(r"\d{4}", date_val)
+                            if m: birth_year_val = int(m.group())
+                    if "Death" in fact_type:
+                        death_date_str = date_val
+                        if date_val:
+                            m = re.search(r"\d{4}", date_val)
+                            if m: death_year_val = int(m.group())
+                # Filter out under-18 deaths
+                if birth_year_val and death_year_val:
+                    age_at_death = death_year_val - birth_year_val
+                    if age_at_death < 18:
+                        continue
+                names = person.get("names", [])
+                full_name = name
+                for n in names:
+                    parts_n = n.get("nameForms", [])
+                    if parts_n:
+                        full_name = parts_n[0].get("fullText", name)
+                        break
+                results.append({
+                    "name": full_name,
+                    "birth_date": birth_date_str,
+                    "death_date": death_date_str,
+                    "source": "SSDI via FamilySearch"
+                })
+        print("[ssdi] " + name + " -> " + str(len(results)) + " results")
+        return {"name": name, "results": results, "count": len(results)}
+    except Exception as e:
+        print("[ssdi] Search error for " + name + ": " + str(e))
+        return {"name": name, "results": [], "count": 0}
+
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
-    try:
-        normalized = normalize_name(name)
-        results = search_legacy_oneoff(normalized)
-        return {"name": normalized, "results": results or [], "count": len(results or [])}
-    except Exception as e:
-        print("Legacy search error: " + str(e))
-        return {"name": name, "results": [], "count": 0}
+    # Legacy search mothballed pending partnership response
+    # Preserved for future reactivation
+    # try:
+    #     normalized = normalize_name(name)
+    #     results = search_legacy_oneoff(normalized)
+    #     return {"name": normalized, "results": results or [], "count": len(results or [])}
+    # except Exception as e:
+    #     print("Legacy search error: " + str(e))
+    return {"name": name, "results": [], "count": 0}
 
 @app.post("/search", response_model=List[ObituaryResult])
 async def search_obituaries(search: ObituarySearch):
