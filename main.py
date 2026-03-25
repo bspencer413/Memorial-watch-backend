@@ -606,7 +606,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.2")
+app = FastAPI(title="Memory Watch API", version="1.5.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -673,7 +673,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.2"
+        "version": "1.5.3"
     }
 
 @app.get("/admin/stats")
@@ -808,12 +808,29 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             c.execute("SELECT wikipedia_description, death_year FROM watchlist WHERE id = %s", (watch_id,))
             stored = c.fetchone()
             if stored and stored[0]:
-                print("[refresh] " + watch_name + " already deceased with bio - returning stored")
+                print("[refresh] " + watch_name + " already deceased with bio - fetching fresh thumbnail/dates")
+                # Fetch thumbnail and full dates from summary API
+                stored_thumbnail = None
+                stored_birth = None
+                stored_death_full = stored[1]
+                try:
+                    sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(watch_name)
+                    sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
+                    with urllib.request.urlopen(sum_req, timeout=10) as sum_resp:
+                        sum_data = json_lib.loads(sum_resp.read().decode())
+                    thumb = sum_data.get("thumbnail")
+                    stored_thumbnail = thumb.get("source") if thumb else None
+                    stored_birth = sum_data.get("birth_date")
+                    if sum_data.get("death_date"):
+                        stored_death_full = sum_data.get("death_date")
+                except Exception as e:
+                    print("[refresh] Summary fetch error for " + watch_name + ": " + str(e))
                 return {
                     "id": watch_id, "name": watch_name, "is_deceased": True,
-                    "wikipedia_description": stored[0], "death_year": stored[1],
-                    "death_date": stored[1], "description": "", "thumbnail": None,
-                    "birth_date": None, "newly_deceased": False, "legacy_results": []
+                    "wikipedia_description": stored[0], "death_year": stored_death_full,
+                    "death_date": stored_death_full, "description": "",
+                    "thumbnail": stored_thumbnail, "birth_date": stored_birth,
+                    "newly_deceased": False, "legacy_results": []
                 }
 
         wiki_ok = False
