@@ -612,7 +612,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.5")
+app = FastAPI(title="Memory Watch API", version="1.5.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -959,71 +959,119 @@ async def test_refresh(name: str):
 
 @app.get("/ssdi/search")
 async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(get_current_user)):
+    """
+    Search the SSA Death Master File via Google BigQuery.
+    Dataset: fiat-fiendum:ssdmf (111M records, deaths through 2014)
+    Free public dataset, no certification required.
+    """
     try:
-        # FamilySearch SSDI search - public SSA Death Master File data (deaths through ~2014)
+        google_api_key = os.environ.get("GOOGLE_API_KEY", "")
+        if not google_api_key:
+            print("[dmf] No GOOGLE_API_KEY set")
+            return {"name": name, "results": [], "count": 0}
+
+        # Parse name into first/last
         parts = name.strip().split()
-        first = parts[0] if parts else name
-        last = parts[-1] if len(parts) > 1 else ""
-        params = urllib.parse.urlencode({
-            "q.givenName": first,
-            "q.familyName": last,
-            "collection_id": "1202535",  # US Social Security Death Index collection
-            "count": "20",
-            "start": "0"
-        })
-        url = "https://api.familysearch.org/platform/tree/search?" + params
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "MemoryWatch/1.0",
-            "Accept": "application/json"
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        first = parts[0].upper() if parts else name.upper()
+        last = parts[-1].upper() if len(parts) > 1 else ""
+
+        # Build BigQuery SQL query
+        # Table: fiat-fiendum.ssdmf.ssdmf
+        # Fields: fname, lname, dob, dod, state
+        if last:
+            query = (
+                "SELECT fname, lname, dob, dod, state "
+                "FROM `fiat-fiendum.ssdmf.ssdmf` "
+                "WHERE UPPER(lname) = @lname "
+                "AND UPPER(fname) LIKE @fname "
+                "LIMIT 20"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+            ]
+        else:
+            query = (
+                "SELECT fname, lname, dob, dod, state "
+                "FROM `fiat-fiendum.ssdmf.ssdmf` "
+                "WHERE UPPER(fname) LIKE @fname "
+                "LIMIT 20"
+            )
+            query_params = [
+                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+            ]
+
+        # Add birth year filter if provided
+        if birth_year:
+            query = query.replace("LIMIT 20", "AND dob LIKE @birth_year LIMIT 20")
+            query_params.append({
+                "name": "birth_year",
+                "parameterType": {"type": "STRING"},
+                "parameterValue": {"value": birth_year + "%"}
+            })
+
+        # Call BigQuery REST API
+        bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-dmf/queries?key=" + google_api_key
+        payload = json_lib.dumps({
+            "query": query,
+            "queryParameters": query_params,
+            "parameterMode": "NAMED",
+            "useLegacySql": False,
+            "timeoutMs": 10000
+        }).encode()
+
+        req = urllib.request.Request(
+            bq_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json_lib.loads(resp.read().decode())
+
         results = []
-        entries = data.get("entries", [])
-        for entry in entries:
-            content = entry.get("content", {}).get("gedcomx", {})
-            persons = content.get("persons", [])
-            for person in persons:
-                facts = person.get("facts", [])
-                birth_year_val = None
-                death_year_val = None
-                death_date_str = ""
-                birth_date_str = ""
-                for fact in facts:
-                    fact_type = fact.get("type", "")
-                    date_val = fact.get("date", {}).get("original", "")
-                    if "Birth" in fact_type:
-                        birth_date_str = date_val
-                        if date_val:
-                            m = re.search(r"\d{4}", date_val)
-                            if m: birth_year_val = int(m.group())
-                    if "Death" in fact_type:
-                        death_date_str = date_val
-                        if date_val:
-                            m = re.search(r"\d{4}", date_val)
-                            if m: death_year_val = int(m.group())
-                # Filter out under-18 deaths
-                if birth_year_val and death_year_val:
-                    age_at_death = death_year_val - birth_year_val
-                    if age_at_death < 18:
+        rows = data.get("rows", [])
+        schema = data.get("schema", {}).get("fields", [])
+        field_names = [f["name"] for f in schema]
+
+        for row in rows:
+            values = [v.get("v", "") for v in row.get("f", [])]
+            record = dict(zip(field_names, values))
+            fname = (record.get("fname") or "").strip().title()
+            lname = (record.get("lname") or "").strip().title()
+            dob = (record.get("dob") or "").strip()
+            dod = (record.get("dod") or "").strip()
+            state = (record.get("state") or "").strip()
+
+            # Filter under-18 deaths
+            if dob and dod:
+                try:
+                    birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
+                    death_yr = int(dod[:4]) if len(dod) >= 4 else 0
+                    if birth_yr and death_yr and (death_yr - birth_yr) < 18:
                         continue
-                names = person.get("names", [])
-                full_name = name
-                for n in names:
-                    parts_n = n.get("nameForms", [])
-                    if parts_n:
-                        full_name = parts_n[0].get("fullText", name)
-                        break
-                results.append({
-                    "name": full_name,
-                    "birth_date": birth_date_str,
-                    "death_date": death_date_str,
-                    "source": "SSDI via FamilySearch"
-                })
-        print("[ssdi] " + name + " -> " + str(len(results)) + " results")
+                except Exception:
+                    pass
+
+            # Format dates YYYYMMDD -> readable
+            def fmt_date(d):
+                if not d or len(d) < 8: return d
+                try: return d[4:6].lstrip("0") + "/" + d[6:8].lstrip("0") + "/" + d[:4]
+                except: return d
+
+            results.append({
+                "name": (fname + " " + lname).strip(),
+                "birth_date": fmt_date(dob),
+                "death_date": fmt_date(dod),
+                "state": state,
+                "source": "SSA Death Master File"
+            })
+
+        print("[dmf] " + name + " -> " + str(len(results)) + " results")
         return {"name": name, "results": results, "count": len(results)}
+
     except Exception as e:
-        print("[ssdi] Search error for " + name + ": " + str(e))
+        print("[dmf] Search error for " + name + ": " + str(e))
         return {"name": name, "results": [], "count": 0}
 
 @app.get("/legacy/search")
