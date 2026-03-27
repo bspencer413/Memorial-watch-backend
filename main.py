@@ -72,13 +72,14 @@ def get_google_access_token() -> str:
 
 def run_bigquery(query: str, query_params: list) -> dict:
     access_token = get_google_access_token()
-    bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-ssdi/queries"
+    bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-ssdi/jobs/query"
     payload = json_lib.dumps({
         "query": query,
         "queryParameters": query_params,
         "parameterMode": "NAMED",
         "useLegacySql": False,
-        "timeoutMs": 10000
+        "timeoutMs": 10000,
+        "location": "EU"
     }).encode()
     req = urllib.request.Request(
         bq_url,
@@ -548,7 +549,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.9")
+app = FastAPI(title="Memory Watch API", version="1.5.11")
 
 app.add_middleware(
     CORSMiddleware,
@@ -615,7 +616,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.9"
+        "version": "1.5.11"
     }
 
 @app.get("/admin/stats")
