@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.error
 import json as json_lib
 from contextlib import contextmanager
+from google.cloud import bigquery
+from google.oauth2 import service_account
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "memorial-watch-secret-2026")
 ALGORITHM = "HS256"
@@ -32,98 +34,65 @@ DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
 DB_NAME = "memorial_watch_db"
 DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
 
-# ── Google Service Account Auth ────────────────────────────────────────────────
+# ── Google BigQuery via google-cloud-bigquery library ──────────────────────────
 
-def get_google_access_token() -> str:
+def get_bq_client():
+    """Create BigQuery client from service account JSON env var."""
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not sa_json:
         raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
-    sa = json_lib.loads(sa_json)
-    now = int(time.time())
-    payload = {
-        "iss": sa["client_email"],
-        "scope": "https://www.googleapis.com/auth/bigquery",
-        "aud": "https://oauth2.googleapis.com/token",
-        "iat": now,
-        "exp": now + 3600,
-    }
-    signed_jwt = jwt.encode(payload, sa["private_key"], algorithm="RS256")
-    token_data = urllib.parse.urlencode({
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": signed_jwt,
-    }).encode()
-    req = urllib.request.Request(
-        "https://oauth2.googleapis.com/token",
-        data=token_data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST"
+    sa_info = json_lib.loads(sa_json)
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=["https://www.googleapis.com/auth/bigquery"]
     )
+    return bigquery.Client(project="memorywatch-ssdi", credentials=credentials)
+
+
+def run_bigquery(sql: str, params: list) -> list:
+    """Run a parameterized BigQuery query. Returns list of row dicts."""
+    client = get_bq_client()
+    bq_params = []
+    for p in params:
+        bq_params.append(bigquery.ScalarQueryParameter(
+            p["name"],
+            p["parameterType"]["type"],
+            p["parameterValue"]["value"]
+        ))
+    job_config = bigquery.QueryJobConfig(query_parameters=bq_params)
+    query_job = client.query(sql, job_config=job_config)
+    rows = query_job.result()
+    return [dict(row) for row in rows]
+
+
+def fmt_date(d) -> str:
+    """Format date object or YYYY-MM-DD string -> M/D/YYYY"""
+    if not d:
+        return ""
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            token_resp = json_lib.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="ignore")
-        raise Exception("Token exchange HTTP " + str(e.code) + ": " + error_body)
-    access_token = token_resp.get("access_token")
-    if not access_token:
-        raise Exception("Failed to obtain access token: " + str(token_resp))
-    return access_token
-
-
-def run_bigquery(query: str, query_params: list) -> dict:
-    access_token = get_google_access_token()
-    bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-ssdi/queries"
-    payload = json_lib.dumps({
-        "query": query,
-        "queryParameters": query_params,
-        "parameterMode": "NAMED",
-        "useLegacySql": False,
-        "timeoutMs": 10000,
-        "location": "EU"
-    }).encode()
-    req = urllib.request.Request(
-        bq_url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + access_token,
-        },
-        method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json_lib.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="ignore")
-        raise Exception("BigQuery HTTP " + str(e.code) + ": " + error_body)
-
-
-def fmt_date(d):
-    if not d or len(d) < 8:
-        return d
-    try:
-        return d[4:6].lstrip("0") + "/" + d[6:8].lstrip("0") + "/" + d[:4]
+        s = str(d)  # handles both date objects and strings
+        if len(s) >= 10:
+            parts = s[:10].split("-")
+            if len(parts) == 3:
+                return str(int(parts[1])) + "/" + str(int(parts[2])) + "/" + parts[0]
+        return s
     except Exception:
-        return d
+        return str(d)
 
 
-def parse_bq_results(data: dict) -> list:
-    rows = data.get("rows", [])
-    schema = data.get("schema", {}).get("fields", [])
-    field_names = [f["name"] for f in schema]
+def parse_bq_results(rows: list) -> list:
+    """Parse BigQuery row dicts into clean result dicts, filtering under-18 deaths."""
     results = []
-    for row in rows:
-        values = [v.get("v", "") for v in row.get("f", [])]
-        record = dict(zip(field_names, values))
-        fname = (record.get("first_name") or "").strip().title()
-        lname = (record.get("last_name") or "").strip().title()
-        dob = (record.get("dob") or "").strip()
-        dod = (record.get("dod") or "").strip()
-        state = (record.get("state", "") or "").strip()
+    for record in rows:
+        fname = (str(record.get("first_name") or "")).strip().title()
+        lname = (str(record.get("last_name") or "")).strip().title()
+        dob = record.get("dob")
+        dod = record.get("dod")
+        # Filter under-18 deaths
         if dob and dod:
             try:
-                birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
-                death_yr = int(dod[:4]) if len(dod) >= 4 else 0
+                birth_yr = int(str(dob)[:4])
+                death_yr = int(str(dod)[:4])
                 if birth_yr and death_yr and (death_yr - birth_yr) < 18:
                     continue
             except Exception:
@@ -549,7 +518,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.13")
+app = FastAPI(title="Memory Watch API", version="1.5.14")
 
 app.add_middleware(
     CORSMiddleware,
@@ -616,7 +585,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.13"
+        "version": "1.5.14"
     }
 
 @app.get("/admin/stats")
@@ -677,8 +646,8 @@ async def test_ssdi(name: str):
             {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
             {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
         ]
-        data = run_bigquery(query, query_params)
-        results = parse_bq_results(data)
+        rows = run_bigquery(query, query_params)
+        results = parse_bq_results(rows)
         return {"name": name, "count": len(results), "results": results, "bq_ok": True}
     except Exception as e:
         return {"name": name, "bq_ok": False, "error": str(e)}
@@ -934,8 +903,8 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 "parameterType": {"type": "STRING"},
                 "parameterValue": {"value": birth_year + "%"}
             })
-        data = run_bigquery(query, query_params)
-        results = parse_bq_results(data)
+        rows = run_bigquery(query, query_params)
+        results = parse_bq_results(rows)
         print("[dmf] " + name + " -> " + str(len(results)) + " results")
         return {"name": name, "results": results, "count": len(results)}
     except Exception as e:
