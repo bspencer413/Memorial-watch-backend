@@ -29,6 +29,7 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_EMAIL = "alerts@memorywatch.app"
 
 # OBITUARY_FEEDS suspended - scraping paused, code preserved below
+
 # OBITUARY_FEEDS = [
 # "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3",
 # "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=3",
@@ -285,7 +286,6 @@ def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, 
         return False
 
 def fetch_wiki_data(name: str) -> dict:
-    # Use action API with redirects - bypasses summary cache, gets current article data
     params = urllib.parse.urlencode({
         "action": "query",
         "titles": name,
@@ -313,7 +313,6 @@ def fetch_wiki_data(name: str) -> dict:
     title = page.get("title", name)
     extract = page.get("extract", "")
 
-    # Check categories for death - "2026 deaths", "2025 deaths" etc.
     categories = [c.get("title", "") for c in page.get("categories", [])]
     death_year_from_cat = None
     for cat in categories:
@@ -327,20 +326,17 @@ def fetch_wiki_data(name: str) -> dict:
         for cat in categories
     )
 
-    # Check for disambiguation
     page_type = "standard"
     if "disambiguation" in page.get("pageprops", {}):
         page_type = "disambiguation"
     elif "(disambiguation)" in title:
         page_type = "disambiguation"
 
-    # Build summary description from extract
     description = ""
     if extract:
         first_sent = extract.split(".")[0]
         description = first_sent[:150] if first_sent else ""
 
-    # Also try summary API for thumbnail and birth/death dates
     thumbnail = None
     birth_date = None
     death_date_summary = None
@@ -358,7 +354,6 @@ def fetch_wiki_data(name: str) -> dict:
     except Exception:
         pass
 
-    # Use death_date from summary if available, otherwise from categories
     death_date = death_date_summary or death_year_from_cat
 
     return {
@@ -373,8 +368,6 @@ def fetch_wiki_data(name: str) -> dict:
     }
 
 def normalize_name_for_wiki(name: str) -> str:
-    # Add period after single-letter middle initials if missing
-    # "Robert S Mueller" -> "Robert S. Mueller"
     words = name.strip().split()
     result = []
     for i, word in enumerate(words):
@@ -385,12 +378,9 @@ def normalize_name_for_wiki(name: str) -> str:
     return " ".join(result)
 
 def fetch_wiki_data_smart(name: str) -> dict:
-    # Try direct lookup - if resolves cleanly, use it
     data = fetch_wiki_data(name)
     if data.get("type") != "disambiguation" and data.get("extract"):
         return data
-    # If disambiguation, use Wikipedia search to find best match
-    # but require last name to match to avoid false positives
     name_parts = [p for p in name.strip().split() if p.replace(".", "")]
     last_name = name_parts[-1].lower().replace(".", "") if name_parts else ""
     first_name = name_parts[0].lower() if name_parts else ""
@@ -404,13 +394,10 @@ def fetch_wiki_data_smart(name: str) -> dict:
         for result in results:
             title = result.get("title", "")
             title_lower = title.lower()
-            # Skip disambiguation pages
             if "(disambiguation)" in title_lower:
                 continue
-            # Must contain last name
             if last_name and last_name not in title_lower:
                 continue
-            # Must contain first name -- prevents Michael Blatty matching William Blatty
             if first_name and first_name not in title_lower:
                 print("[wiki_smart] Skipping " + title + " - first name mismatch (want " + first_name + ")")
                 continue
@@ -426,10 +413,8 @@ def fetch_wiki_data_smart(name: str) -> dict:
                 continue
     except Exception as e:
         print("[wiki_smart] Search failed: " + str(e))
-    # Could not resolve - return original disambiguation data
     print("[wiki_smart] Could not resolve: " + name)
     return data
-
 
 def extract_full_death_date(data: dict) -> str:
     import re as _re
@@ -437,19 +422,16 @@ def extract_full_death_date(data: dict) -> str:
     full_date_pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
     extract = data.get("extract", "")
     description = data.get("description", "")
-    # Try extract text first - most reliable source for full date
     matches = _re.findall(full_date_pattern, extract)
     if len(matches) >= 2:
-        return matches[-1]  # Last date = death date
+        return matches[-1]
     if len(matches) == 1:
         first_sentence = extract.split(".")[0]
         if _re.search(r"died|death|passed|\u2013|\u2014", first_sentence, _re.IGNORECASE):
             return matches[0]
-    # Try death_date field - only use if it looks like a full date not just a year
     death_date = data.get("death_date", "")
     if death_date and _re.search(full_date_pattern, str(death_date)):
         return str(death_date)
-    # Fall back to year from description or category
     m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", description)
     if m:
         return m.group(1)
@@ -469,7 +451,6 @@ def is_deceased_from_wiki(data: dict) -> bool:
 
     if page_type == "disambiguation":
         return False
-    # Death year in category (e.g. "2026 deaths") is most reliable signal
     if death_from_category:
         return True
     if death_date:
@@ -481,20 +462,14 @@ def is_deceased_from_wiki(data: dict) -> bool:
         return True
     if re.search(r"\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)", first_sentence):
         return False
-    if re.search(r"(died|death|passed away|deceased)", extract, re.IGNORECASE):
+    if re.search(r"(died|death|passed away|deceased)", extract, re.IGNORECASE):
         return True
-    if re.search(r"(died|death|deceased)", description, re.IGNORECASE):
+    if re.search(r"(died|death|deceased)", description, re.IGNORECASE):
         return True
     return False
 
 def search_legacy_oneoff(name: str) -> list:
-    """
-    One-off Legacy.com search - hits their search page directly.
-    Falls back to searching our local scraped DB if Legacy is unavailable.
-    """
     results = []
-
-    # Try Legacy.com search directly
     try:
         parts = name.strip().split()
         first = parts[0] if parts else name
@@ -510,9 +485,7 @@ def search_legacy_oneoff(name: str) -> list:
         })
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
-            # Extract obit entries from the HTML using simple patterns
             import re as _re
-            # Look for JSON-LD structured data
             json_ld_matches = _re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, _re.DOTALL)
             for match in json_ld_matches[:5]:
                 try:
@@ -543,9 +516,7 @@ def search_legacy_oneoff(name: str) -> list:
     except Exception as e:
         print("Legacy direct search error: " + str(e))
 
-    # Fallback: search our local scraped DB
     try:
-        from contextlib import contextmanager as _cm
         normalized = normalize_name(name)
         with get_db() as conn:
             c = conn.cursor()
@@ -612,7 +583,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.6")
+app = FastAPI(title="Memory Watch API", version="1.5.7")
 
 app.add_middleware(
     CORSMiddleware,
@@ -679,7 +650,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.5"
+        "version": "1.5.7"  # FIXED: was hardcoded 1.5.5
     }
 
 @app.get("/admin/stats")
@@ -709,6 +680,79 @@ async def wiki_check_now():
 # async def scrape_now():
 #     threading.Thread(target=scrape_obituaries, daemon=True).start()
 #     return {"message": "Scrape started"}
+
+@app.get("/admin/test-refresh/{name}")
+async def test_refresh(name: str):
+    """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
+    try:
+        data = fetch_wiki_data(name)
+        is_deceased = is_deceased_from_wiki(data)
+        return {
+            "name": name,
+            "is_deceased": is_deceased,
+            "death_date": data.get("death_date"),
+            "description": data.get("description"),
+            "extract_first_sentence": (data.get("extract") or "").split(".")[0],
+            "type": data.get("type"),
+            "wiki_ok": True
+        }
+    except Exception as e:
+        return {"name": name, "wiki_ok": False, "error": str(e)}
+
+@app.get("/admin/test-ssdi/{name}")
+async def test_ssdi(name: str):
+    """Test endpoint - queries BigQuery DMF for a name. No auth required."""
+    try:
+        google_api_key = os.environ.get("GOOGLE_API_KEY", "")
+        if not google_api_key:
+            return {"error": "No GOOGLE_API_KEY set", "name": name}
+
+        parts = name.strip().split()
+        first = parts[0].upper() if parts else name.upper()
+        last = parts[-1].upper() if len(parts) > 1 else ""
+
+        query = (
+            "SELECT fname, lname, dob, dod, state "
+            "FROM `fiat-fiendum.ssdmf.ssdmf` "
+            "WHERE UPPER(lname) = @lname "
+            "AND UPPER(fname) LIKE @fname "
+            "LIMIT 5"
+        )
+        query_params = [
+            {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+            {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+        ]
+
+        bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-dmf/queries?key=" + google_api_key
+        payload = json_lib.dumps({
+            "query": query,
+            "queryParameters": query_params,
+            "parameterMode": "NAMED",
+            "useLegacySql": False,
+            "timeoutMs": 10000
+        }).encode()
+
+        req = urllib.request.Request(
+            bq_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json_lib.loads(resp.read().decode())
+
+        rows = data.get("rows", [])
+        schema = data.get("schema", {}).get("fields", [])
+        field_names = [f["name"] for f in schema]
+        results = []
+        for row in rows:
+            values = [v.get("v", "") for v in row.get("f", [])]
+            results.append(dict(zip(field_names, values)))
+
+        return {"name": name, "count": len(results), "results": results, "bq_ok": True}
+
+    except Exception as e:
+        return {"name": name, "bq_ok": False, "error": str(e)}
 
 @app.post("/auth/register", response_model=Token)
 async def register(user: UserCreate):
@@ -809,13 +853,11 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             raise HTTPException(status_code=404, detail="Watchlist item not found")
         watch_id, watch_name, was_deceased, user_email = row
 
-        # If already deceased with stored bio, skip re-checking Wikipedia
         if was_deceased:
             c.execute("SELECT wikipedia_description, death_year FROM watchlist WHERE id = %s", (watch_id,))
             stored = c.fetchone()
             if stored and stored[0]:
                 print("[refresh] " + watch_name + " already deceased with bio - fetching fresh thumbnail/dates")
-                # Fetch thumbnail and full dates from summary API
                 stored_thumbnail = None
                 stored_birth = None
                 stored_death_full = stored[1]
@@ -864,15 +906,12 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             print("[refresh] Wikipedia fetch failed for " + watch_name + ": " + str(e))
             is_deceased = was_deceased or False
 
-        # Check Legacy one-off
         legacy_results = search_legacy_oneoff(watch_name)
 
-        # If Legacy finds an obit and wiki didn't catch death, mark deceased
         if legacy_results and not is_deceased:
             is_deceased = True
             print("[refresh] Legacy obit found for " + watch_name)
 
-        # Always update the watchlist row if wiki succeeded
         if wiki_ok or legacy_results:
             c.execute("""
                 UPDATE watchlist
@@ -884,9 +923,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             """, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
             conn.commit()
 
-        # Create notification if deceased and no notification exists yet for this person
-        # Use is_deceased (current state) not was_deceased comparison, to catch cases
-        # where DB was stale (person died but DB not yet updated)
         if is_deceased:
             c.execute(
                 "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
@@ -909,7 +945,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                             (watch_id, "%Wikipedia%"))
                         conn.commit()
 
-        # Normalize thumbnail to string URL
         if isinstance(thumbnail, dict):
             thumbnail = thumbnail.get("source")
         print("[refresh] Result: " + watch_name + " is_deceased=" + str(is_deceased) + " death_date=" + str(death_date) + " thumbnail=" + str(thumbnail is not None))
@@ -934,28 +969,10 @@ async def delete_notification(notif_id: int, user_id: int = Depends(get_current_
             c = conn.cursor()
             c.execute("DELETE FROM notifications WHERE id = %s AND user_id = %s", (notif_id, user_id))
             conn.commit()
-        return {"deleted": True}
+            return {"deleted": True}
     except Exception as e:
         print("Delete notification error: " + str(e))
         return {"deleted": False}
-
-@app.get("/admin/test-refresh/{name}")
-async def test_refresh(name: str):
-    """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
-    try:
-        data = fetch_wiki_data(name)
-        is_deceased = is_deceased_from_wiki(data)
-        return {
-            "name": name,
-            "is_deceased": is_deceased,
-            "death_date": data.get("death_date"),
-            "description": data.get("description"),
-            "extract_first_sentence": (data.get("extract") or "").split(".")[0],
-            "type": data.get("type"),
-            "wiki_ok": True
-        }
-    except Exception as e:
-        return {"name": name, "wiki_ok": False, "error": str(e)}
 
 @app.get("/ssdi/search")
 async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(get_current_user)):
@@ -970,14 +987,10 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
             print("[dmf] No GOOGLE_API_KEY set")
             return {"name": name, "results": [], "count": 0}
 
-        # Parse name into first/last
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
 
-        # Build BigQuery SQL query
-        # Table: fiat-fiendum.ssdmf.ssdmf
-        # Fields: fname, lname, dob, dod, state
         if last:
             query = (
                 "SELECT fname, lname, dob, dod, state "
@@ -1001,7 +1014,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
             ]
 
-        # Add birth year filter if provided
         if birth_year:
             query = query.replace("LIMIT 20", "AND dob LIKE @birth_year LIMIT 20")
             query_params.append({
@@ -1010,7 +1022,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 "parameterValue": {"value": birth_year + "%"}
             })
 
-        # Call BigQuery REST API
         bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-dmf/queries?key=" + google_api_key
         payload = json_lib.dumps({
             "query": query,
@@ -1043,7 +1054,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
             dod = (record.get("dod") or "").strip()
             state = (record.get("state") or "").strip()
 
-            # Filter under-18 deaths
             if dob and dod:
                 try:
                     birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
@@ -1053,7 +1063,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 except Exception:
                     pass
 
-            # Format dates YYYYMMDD -> readable
             def fmt_date(d):
                 if not d or len(d) < 8: return d
                 try: return d[4:6].lstrip("0") + "/" + d[6:8].lstrip("0") + "/" + d[:4]
@@ -1077,13 +1086,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
     # Legacy search mothballed pending partnership response
-    # Preserved for future reactivation
-    # try:
-    #     normalized = normalize_name(name)
-    #     results = search_legacy_oneoff(normalized)
-    #     return {"name": normalized, "results": results or [], "count": len(results or [])}
-    # except Exception as e:
-    #     print("Legacy search error: " + str(e))
     return {"name": name, "results": [], "count": 0}
 
 @app.post("/search", response_model=List[ObituaryResult])
@@ -1099,8 +1101,6 @@ async def search_obituaries(search: ObituarySearch):
         query = """SELECT id, name, name_normalized, age, location, date, source, link, obit_text
                    FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s"""
         params = ["%" + name + "%", "%" + search_normalized + "%"]
-        # NOTE: location not used as a filter - our scraped data has unreliable location fields
-        # birth_year filter kept as it is date-based and more reliable
         if search.birth_year:
             query += " AND date LIKE %s"
             params.append("%" + search.birth_year + "%")
@@ -1207,80 +1207,8 @@ def check_wikipedia_watchlist():
     print("[" + str(datetime.now()) + "] Wikipedia check complete. " + str(updated) + " updated, " + str(notified) + " notified.")
 
 # SCRAPER CODE SUSPENDED - preserved for future re-activation
-# def scrape_obituaries():
-#     import feedparser
-#     print("[" + str(datetime.now()) + "] Starting obituary scrape...")
-#     total = 0
-#     with get_db() as conn:
-#         c = conn.cursor()
-#         for feed_url in OBITUARY_FEEDS:
-#             try:
-#                 feed = feedparser.parse(feed_url)
-#                 count = 0
-#                 for entry in feed.entries:
-#                     title = " ".join(entry.get("title", "").strip().split())
-#                     link = entry.get("link", "")
-#                     published = entry.get("published", "")
-#                     obit_text = entry.get("summary", "") or entry.get("description", "")
-#                     obit_text = re.sub(r"<[^>]+>", "", obit_text).strip()
-#                     if not title or len(title) < 3:
-#                         continue
-#                     if link:
-#                         c.execute("SELECT id FROM obituaries WHERE link = %s", (link,))
-#                         if c.fetchone():
-#                             continue
-#                     name_normalized = normalize_name(title)
-#                     age = extract_age(title)
-#                     location = extract_location(title)
-#                     c.execute("""
-#                         INSERT INTO obituaries (name, name_normalized, age, location, date, source, link, obit_text)
-#                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-#                     """, (title, name_normalized, age, location, published, feed_url, link, obit_text))
-#                     count += 1
-#                 conn.commit()
-#                 total += count
-#                 print("  " + feed_url + ": " + str(count) + " new entries")
-#             except Exception as e:
-#                 print("  ERROR " + feed_url + ": " + str(e))
-#     print("[" + str(datetime.now()) + "] Scrape complete. " + str(total) + " new obituaries added.")
-#     check_watchlist_matches()
-
-# def check_watchlist_matches():
-#     with get_db() as conn:
-#         c = conn.cursor()
-#         c.execute("""
-#             SELECT w.id, w.user_id, w.name, u.email
-#             FROM watchlist w
-#             JOIN users u ON w.user_id = u.id
-#             WHERE w.status = 'active'
-#         """)
-#         watchlist_items = c.fetchall()
-#         for watch in watchlist_items:
-#             watch_id, user_id, watch_name, user_email = watch
-#             watch_normalized = normalize_name(watch_name)
-#             c.execute("""SELECT id, name, location, link FROM obituaries
-#                 WHERE name ILIKE %s OR name_normalized ILIKE %s""",
-#                 ("%" + watch_name + "%", "%" + watch_normalized + "%"))
-#             matches = c.fetchall()
-#             for obit in matches:
-#                 obit_id, obit_name, obit_location, obit_link = obit
-#                 c.execute(
-#                     "SELECT id FROM notifications WHERE watchlist_id = %s AND obituary_id = %s",
-#                     (watch_id, obit_id))
-#                 if not c.fetchone():
-#                     message = "Possible match found: " + obit_name + " in " + (obit_location or "unknown location")
-#                     c.execute("""
-#                         INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
-#                         VALUES (%s, %s, %s, %s, %s)
-#                     """, (user_id, watch_id, obit_id, message, False))
-#                     conn.commit()
-#                     if user_email:
-#                         sent = send_email_notification(user_email, watch_name, obit_name, obit_location, obit_link)
-#                         if sent:
-#                             c.execute(
-#                                 "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND obituary_id = %s",
-#                                 (watch_id, obit_id))
-#                             conn.commit()
+# def scrape_obituaries(): ...
+# def check_watchlist_matches(): ...
 
 def run_scheduler():
     schedule.every(6).hours.do(check_wikipedia_watchlist)
