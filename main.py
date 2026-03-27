@@ -115,11 +115,11 @@ def parse_bq_results(data: dict) -> list:
     for row in rows:
         values = [v.get("v", "") for v in row.get("f", [])]
         record = dict(zip(field_names, values))
-        fname = (record.get("fname") or "").strip().title()
-        lname = (record.get("lname") or "").strip().title()
+        fname = (record.get("first_name") or "").strip().title()
+        lname = (record.get("last_name") or "").strip().title()
         dob = (record.get("dob") or "").strip()
         dod = (record.get("dod") or "").strip()
-        state = (record.get("state") or "").strip()
+        state = (record.get("state", "") or "").strip()
         if dob and dod:
             try:
                 birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
@@ -132,7 +132,7 @@ def parse_bq_results(data: dict) -> list:
             "name": (fname + " " + lname).strip(),
             "birth_date": fmt_date(dob),
             "death_date": fmt_date(dod),
-            "state": state,
+            "state": "",
             "source": "SSA Death Master File"
         })
     return results
@@ -549,7 +549,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.12")
+app = FastAPI(title="Memory Watch API", version="1.5.13")
 
 app.add_middleware(
     CORSMiddleware,
@@ -616,7 +616,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.12"
+        "version": "1.5.13"
     }
 
 @app.get("/admin/stats")
@@ -667,10 +667,10 @@ async def test_ssdi(name: str):
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
         query = (
-            "SELECT fname, lname, dob, dod, state "
-            "FROM `fiat-fiendum.ssdmf.ssdmf` "
-            "WHERE UPPER(lname) = @lname "
-            "AND UPPER(fname) LIKE @fname "
+            "SELECT first_name, last_name, dob, dod "
+            "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+            "WHERE UPPER(last_name) = @lname "
+            "AND UPPER(first_name) LIKE @fname "
             "LIMIT 5"
         )
         query_params = [
@@ -907,10 +907,10 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
         last = parts[-1].upper() if len(parts) > 1 else ""
         if last:
             query = (
-                "SELECT fname, lname, dob, dod, state "
-                "FROM `fiat-fiendum.ssdmf.ssdmf` "
-                "WHERE UPPER(lname) = @lname "
-                "AND UPPER(fname) LIKE @fname "
+                "SELECT first_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "AND UPPER(first_name) LIKE @fname "
                 "LIMIT 20"
             )
             query_params = [
@@ -919,9 +919,9 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
             ]
         else:
             query = (
-                "SELECT fname, lname, dob, dod, state "
-                "FROM `fiat-fiendum.ssdmf.ssdmf` "
-                "WHERE UPPER(fname) LIKE @fname "
+                "SELECT first_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(first_name) LIKE @fname "
                 "LIMIT 20"
             )
             query_params = [
