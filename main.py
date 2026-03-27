@@ -16,20 +16,15 @@ import re
 import httpx
 import urllib.request
 import urllib.parse
+import urllib.error
 import json as json_lib
 from contextlib import contextmanager
-
-# import feedparser  # suspended - scraping paused
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "memorial-watch-secret-2026")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080
-
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_EMAIL = "alerts@memorywatch.app"
-
-# OBITUARY_FEEDS suspended - scraping paused, code preserved below
-# OBITUARY_FEEDS = [ ... ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
 DB_USER = "memorial_watch_db_user"
@@ -37,14 +32,12 @@ DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
 DB_NAME = "memorial_watch_db"
 DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
 
-# ─── Google Service Account Auth ───────────────────────────────────────────────
+# ── Google Service Account Auth ────────────────────────────────────────────────
 
 def get_google_access_token() -> str:
-    """Exchange service account JSON for a short-lived OAuth2 Bearer token."""
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not sa_json:
         raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
-
     sa = json_lib.loads(sa_json)
     now = int(time.time())
     payload = {
@@ -55,21 +48,22 @@ def get_google_access_token() -> str:
         "exp": now + 3600,
     }
     signed_jwt = jwt.encode(payload, sa["private_key"], algorithm="RS256")
-
     token_data = urllib.parse.urlencode({
         "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
         "assertion": signed_jwt,
     }).encode()
-
     req = urllib.request.Request(
         "https://oauth2.googleapis.com/token",
         data=token_data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST"
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        token_resp = json_lib.loads(resp.read().decode())
-
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_resp = json_lib.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="ignore")
+        raise Exception("Token exchange HTTP " + str(e.code) + ": " + error_body)
     access_token = token_resp.get("access_token")
     if not access_token:
         raise Exception("Failed to obtain access token: " + str(token_resp))
@@ -77,7 +71,6 @@ def get_google_access_token() -> str:
 
 
 def run_bigquery(query: str, query_params: list) -> dict:
-    """Run a parameterized BigQuery query using service account auth."""
     access_token = get_google_access_token()
     bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-ssdi/queries"
     payload = json_lib.dumps({
@@ -96,12 +89,15 @@ def run_bigquery(query: str, query_params: list) -> dict:
         },
         method="POST"
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json_lib.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json_lib.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="ignore")
+        raise Exception("BigQuery HTTP " + str(e.code) + ": " + error_body)
 
 
 def fmt_date(d):
-    """Format YYYYMMDD -> M/D/YYYY"""
     if not d or len(d) < 8:
         return d
     try:
@@ -111,7 +107,6 @@ def fmt_date(d):
 
 
 def parse_bq_results(data: dict) -> list:
-    """Parse BigQuery response rows into clean dicts, filtering under-18 deaths."""
     rows = data.get("rows", [])
     schema = data.get("schema", {}).get("fields", [])
     field_names = [f["name"] for f in schema]
@@ -124,7 +119,6 @@ def parse_bq_results(data: dict) -> list:
         dob = (record.get("dob") or "").strip()
         dod = (record.get("dod") or "").strip()
         state = (record.get("state") or "").strip()
-
         if dob and dod:
             try:
                 birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
@@ -133,7 +127,6 @@ def parse_bq_results(data: dict) -> list:
                     continue
             except Exception:
                 pass
-
         results.append({
             "name": (fname + " " + lname).strip(),
             "birth_date": fmt_date(dob),
@@ -286,18 +279,14 @@ def fetch_wiki_data(name: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "MemoryWatch/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json_lib.loads(resp.read().decode())
-
     pages = data.get("query", {}).get("pages", {})
     if not pages:
         return {}
-
     page = list(pages.values())[0]
     if "missing" in page:
         return {}
-
     title = page.get("title", name)
     extract = page.get("extract", "")
-
     categories = [c.get("title", "") for c in page.get("categories", [])]
     death_year_from_cat = None
     for cat in categories:
@@ -305,23 +294,19 @@ def fetch_wiki_data(name: str) -> dict:
         if m:
             death_year_from_cat = m.group(1)
             break
-
     death_from_category = any(
         any(word in cat.lower() for word in ["deaths", "murdered", "executed"])
         for cat in categories
     )
-
     page_type = "standard"
     if "disambiguation" in page.get("pageprops", {}):
         page_type = "disambiguation"
     elif "(disambiguation)" in title:
         page_type = "disambiguation"
-
     description = ""
     if extract:
         first_sent = extract.split(".")[0]
         description = first_sent[:150] if first_sent else ""
-
     thumbnail = None
     birth_date = None
     death_date_summary = None
@@ -338,9 +323,7 @@ def fetch_wiki_data(name: str) -> dict:
                 description = sum_data.get("description")
     except Exception:
         pass
-
     death_date = death_date_summary or death_year_from_cat
-
     return {
         "title": title,
         "extract": extract,
@@ -433,7 +416,6 @@ def is_deceased_from_wiki(data: dict) -> bool:
     death_date = data.get("death_date", None)
     page_type = data.get("type", "")
     death_from_category = data.get("death_from_category", False)
-
     if page_type == "disambiguation":
         return False
     if death_from_category:
@@ -500,7 +482,6 @@ def search_legacy_oneoff(name: str) -> list:
                 return results[:5]
     except Exception as e:
         print("Legacy direct search error: " + str(e))
-
     try:
         normalized = normalize_name(name)
         with get_db() as conn:
@@ -521,7 +502,6 @@ def search_legacy_oneoff(name: str) -> list:
             print("Legacy DB fallback found " + str(len(results)) + " results for " + name)
     except Exception as e:
         print("Legacy DB fallback error: " + str(e))
-
     return results
 
 class UserCreate(BaseModel):
@@ -568,7 +548,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.8")
+app = FastAPI(title="Memory Watch API", version="1.5.9")
 
 app.add_middleware(
     CORSMiddleware,
@@ -635,7 +615,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.8"
+        "version": "1.5.9"
     }
 
 @app.get("/admin/stats")
@@ -685,7 +665,6 @@ async def test_ssdi(name: str):
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
-
         query = (
             "SELECT fname, lname, dob, dod, state "
             "FROM `fiat-fiendum.ssdmf.ssdmf` "
@@ -697,11 +676,9 @@ async def test_ssdi(name: str):
             {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
             {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
         ]
-
         data = run_bigquery(query, query_params)
         results = parse_bq_results(data)
         return {"name": name, "count": len(results), "results": results, "bq_ok": True}
-
     except Exception as e:
         return {"name": name, "bq_ok": False, "error": str(e)}
 
@@ -856,7 +833,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             is_deceased = was_deceased or False
 
         legacy_results = search_legacy_oneoff(watch_name)
-
         if legacy_results and not is_deceased:
             is_deceased = True
 
@@ -923,16 +899,11 @@ async def delete_notification(notif_id: int, user_id: int = Depends(get_current_
 
 @app.get("/ssdi/search")
 async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(get_current_user)):
-    """
-    Search the SSA Death Master File via Google BigQuery.
-    Dataset: fiat-fiendum:ssdmf (111M records, deaths through 2014)
-    Auth: service account JWT via GOOGLE_SERVICE_ACCOUNT_JSON env var.
-    """
+    """Search the SSA Death Master File via Google BigQuery."""
     try:
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
-
         if last:
             query = (
                 "SELECT fname, lname, dob, dod, state "
@@ -955,7 +926,6 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
             query_params = [
                 {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
             ]
-
         if birth_year:
             query = query.replace("LIMIT 20", "AND dob LIKE @birth_year LIMIT 20")
             query_params.append({
@@ -963,19 +933,16 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 "parameterType": {"type": "STRING"},
                 "parameterValue": {"value": birth_year + "%"}
             })
-
         data = run_bigquery(query, query_params)
         results = parse_bq_results(data)
         print("[dmf] " + name + " -> " + str(len(results)) + " results")
         return {"name": name, "results": results, "count": len(results)}
-
     except Exception as e:
         print("[dmf] Search error for " + name + ": " + str(e))
         return {"name": name, "results": [], "count": 0}
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
-    # Legacy search mothballed pending partnership response
     return {"name": name, "results": [], "count": 0}
 
 @app.post("/search", response_model=List[ObituaryResult])
@@ -1096,13 +1063,8 @@ def check_wikipedia_watchlist():
                 continue
     print("[" + str(datetime.now()) + "] Wikipedia check complete. " + str(updated) + " updated, " + str(notified) + " notified.")
 
-# SCRAPER CODE SUSPENDED - preserved for future re-activation
-# def scrape_obituaries(): ...
-# def check_watchlist_matches(): ...
-
 def run_scheduler():
     schedule.every(6).hours.do(check_wikipedia_watchlist)
-    # schedule.every(15).minutes.do(scrape_obituaries)  # suspended
     while True:
         schedule.run_pending()
         time.sleep(60)
