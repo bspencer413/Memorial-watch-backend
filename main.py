@@ -29,136 +29,121 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_EMAIL = "alerts@memorywatch.app"
 
 # OBITUARY_FEEDS suspended - scraping paused, code preserved below
-
-# OBITUARY_FEEDS = [
-# "https://www.legacy.com/obituaries/nhregister/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/bostonglobe/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nytimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/philly/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/washingtonpost/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/baltimoresun/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/courant/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/pressherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/newsday/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/buffalonews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/syracuse/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/timesunion/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/providencejournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/delawareonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/app/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/northjersey/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nj/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/poconorecord/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/citizensvoice/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/timesleader/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/pittsburghpostgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fredericksburg/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/roanoke/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/richmond/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/orlandosentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/miamiherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/charlotteobserver/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/ajc/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tennessean/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nola/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sunherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/clarionledger/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tallahassee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/jacksonville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tampabay/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/heraldonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thestate/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/islandpacket/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/newsobserver/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greensboro/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/kentucky/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/courier-journal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/huntsville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/al/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/arkansasonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/chicagotribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/freep/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/startribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/indystar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/stltoday/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/kansascity/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/cleveland/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/omaha/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dispatch/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/cincinnati/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dayton/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/akron/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/toledo/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/journalsentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/madison/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greenbaypressgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/postcrescent/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/lansingstatejournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/grandrapids/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/southbendtribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/jconline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fortwayne/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/evansville/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/siouxcityjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/desmoinesregister/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/duluthnewstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/rapidcityjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/argusleader/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/bismarcktribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/grandforksherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/azcentral/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/dallasnews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/houstonchronicle/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/expressnews/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/abqjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/tulsaworld/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/oklahoman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/lubbockonline/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/caller/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/elpasotimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/latimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sfgate/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/oregonlive/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/seattletimes/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/denverpost/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sltrib/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/sacbee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/fresnobee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/modbee/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/mercedsunstar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thenewstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/spokesman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/idahostatesman/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/montanastandard/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/greatfallstribune/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/billingsgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nevadaappeal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/rgj/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/reviewjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/coloradoan/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/gjsentinel/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/wyomingfacts/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/staradvertiser/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/adn/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/theglobeandmail/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/thestar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/vancouversun/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/calgaryherald/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/ottawacitizen/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/montrealgazette/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/edmontonjournal/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/windsorstar/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/uk/obituaries/yourlocalpaper-uk/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/au/obituaries/smh/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/au/obituaries/theage/services/rss.ashx?recentdate=3",
-# "https://www.legacy.com/obituaries/nzherald/services/rss.ashx?recentdate=3",
-# ]
+# OBITUARY_FEEDS = [ ... ]
 
 DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
 DB_USER = "memorial_watch_db_user"
 DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
 DB_NAME = "memorial_watch_db"
 DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
+
+# ─── Google Service Account Auth ───────────────────────────────────────────────
+
+def get_google_access_token() -> str:
+    """Exchange service account JSON for a short-lived OAuth2 Bearer token."""
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not sa_json:
+        raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
+
+    sa = json_lib.loads(sa_json)
+    now = int(time.time())
+    payload = {
+        "iss": sa["client_email"],
+        "scope": "https://www.googleapis.com/auth/bigquery",
+        "aud": "https://oauth2.googleapis.com/token",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    signed_jwt = jwt.encode(payload, sa["private_key"], algorithm="RS256")
+
+    token_data = urllib.parse.urlencode({
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": signed_jwt,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=token_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        token_resp = json_lib.loads(resp.read().decode())
+
+    access_token = token_resp.get("access_token")
+    if not access_token:
+        raise Exception("Failed to obtain access token: " + str(token_resp))
+    return access_token
+
+
+def run_bigquery(query: str, query_params: list) -> dict:
+    """Run a parameterized BigQuery query using service account auth."""
+    access_token = get_google_access_token()
+    bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-ssdi/queries"
+    payload = json_lib.dumps({
+        "query": query,
+        "queryParameters": query_params,
+        "parameterMode": "NAMED",
+        "useLegacySql": False,
+        "timeoutMs": 10000
+    }).encode()
+    req = urllib.request.Request(
+        bq_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + access_token,
+        },
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json_lib.loads(resp.read().decode())
+
+
+def fmt_date(d):
+    """Format YYYYMMDD -> M/D/YYYY"""
+    if not d or len(d) < 8:
+        return d
+    try:
+        return d[4:6].lstrip("0") + "/" + d[6:8].lstrip("0") + "/" + d[:4]
+    except Exception:
+        return d
+
+
+def parse_bq_results(data: dict) -> list:
+    """Parse BigQuery response rows into clean dicts, filtering under-18 deaths."""
+    rows = data.get("rows", [])
+    schema = data.get("schema", {}).get("fields", [])
+    field_names = [f["name"] for f in schema]
+    results = []
+    for row in rows:
+        values = [v.get("v", "") for v in row.get("f", [])]
+        record = dict(zip(field_names, values))
+        fname = (record.get("fname") or "").strip().title()
+        lname = (record.get("lname") or "").strip().title()
+        dob = (record.get("dob") or "").strip()
+        dod = (record.get("dod") or "").strip()
+        state = (record.get("state") or "").strip()
+
+        if dob and dod:
+            try:
+                birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
+                death_yr = int(dod[:4]) if len(dod) >= 4 else 0
+                if birth_yr and death_yr and (death_yr - birth_yr) < 18:
+                    continue
+            except Exception:
+                pass
+
+        results.append({
+            "name": (fname + " " + lname).strip(),
+            "birth_date": fmt_date(dob),
+            "death_date": fmt_date(dod),
+            "state": state,
+            "source": "SSA Death Master File"
+        })
+    return results
+
+# ───────────────────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
@@ -583,7 +568,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.7")
+app = FastAPI(title="Memory Watch API", version="1.5.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -650,7 +635,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.7"  # FIXED: was hardcoded 1.5.5
+        "version": "1.5.8"
     }
 
 @app.get("/admin/stats")
@@ -675,15 +660,9 @@ async def wiki_check_now():
     threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
     return {"message": "Wikipedia watchlist check started"}
 
-# Scraping endpoint suspended - code preserved
-# @app.get("/admin/scrape-now")
-# async def scrape_now():
-#     threading.Thread(target=scrape_obituaries, daemon=True).start()
-#     return {"message": "Scrape started"}
-
 @app.get("/admin/test-refresh/{name}")
 async def test_refresh(name: str):
-    """Test endpoint - checks Wikipedia for a name and returns raw result. No auth required."""
+    """Test endpoint - checks Wikipedia for a name. No auth required."""
     try:
         data = fetch_wiki_data(name)
         is_deceased = is_deceased_from_wiki(data)
@@ -703,10 +682,6 @@ async def test_refresh(name: str):
 async def test_ssdi(name: str):
     """Test endpoint - queries BigQuery DMF for a name. No auth required."""
     try:
-        google_api_key = os.environ.get("GOOGLE_API_KEY", "")
-        if not google_api_key:
-            return {"error": "No GOOGLE_API_KEY set", "name": name}
-
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
@@ -723,32 +698,8 @@ async def test_ssdi(name: str):
             {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
         ]
 
-        bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-dmf/queries?key=" + google_api_key
-        payload = json_lib.dumps({
-            "query": query,
-            "queryParameters": query_params,
-            "parameterMode": "NAMED",
-            "useLegacySql": False,
-            "timeoutMs": 10000
-        }).encode()
-
-        req = urllib.request.Request(
-            bq_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json_lib.loads(resp.read().decode())
-
-        rows = data.get("rows", [])
-        schema = data.get("schema", {}).get("fields", [])
-        field_names = [f["name"] for f in schema]
-        results = []
-        for row in rows:
-            values = [v.get("v", "") for v in row.get("f", [])]
-            results.append(dict(zip(field_names, values)))
-
+        data = run_bigquery(query, query_params)
+        results = parse_bq_results(data)
         return {"name": name, "count": len(results), "results": results, "bq_ok": True}
 
     except Exception as e:
@@ -839,7 +790,7 @@ async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current
 
 @app.get("/watchlist/{item_id}/refresh")
 async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_current_user)):
-    """Live refresh - checks Wikipedia + Legacy for latest status. Called when user taps a name."""
+    """Live refresh - checks Wikipedia + Legacy for latest status."""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
@@ -857,7 +808,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             c.execute("SELECT wikipedia_description, death_year FROM watchlist WHERE id = %s", (watch_id,))
             stored = c.fetchone()
             if stored and stored[0]:
-                print("[refresh] " + watch_name + " already deceased with bio - fetching fresh thumbnail/dates")
                 stored_thumbnail = None
                 stored_birth = None
                 stored_death_full = stored[1]
@@ -888,10 +838,10 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
         thumbnail = None
         birth_date = None
         is_deceased = False
+        wiki_data = {}
 
         try:
             normalized_watch_name = normalize_name_for_wiki(watch_name)
-            print("[refresh] Smart lookup for: " + normalized_watch_name + " (stored: " + watch_name + ")")
             wiki_data = fetch_wiki_data_smart(normalized_watch_name)
             extract = wiki_data.get("extract", "")
             description = wiki_data.get("description", "")
@@ -901,7 +851,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
             birth_date = wiki_data.get("birth_date", None)
             is_deceased = is_deceased_from_wiki(wiki_data)
             wiki_ok = True
-            print("[refresh] " + watch_name + " is_deceased=" + str(is_deceased) + " type=" + str(wiki_data.get("type")))
         except Exception as e:
             print("[refresh] Wikipedia fetch failed for " + watch_name + ": " + str(e))
             is_deceased = was_deceased or False
@@ -910,7 +859,6 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
 
         if legacy_results and not is_deceased:
             is_deceased = True
-            print("[refresh] Legacy obit found for " + watch_name)
 
         if wiki_ok or legacy_results:
             c.execute("""
@@ -928,14 +876,13 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
                 "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
                 (watch_id, "%Wikipedia%"))
             if not c.fetchone():
-                death_info = (" Died: " + str(death_date)) if death_date else ("" if not extract_full_death_date(wiki_data) else " Died: " + extract_full_death_date(wiki_data))
+                death_info = (" Died: " + str(death_date)) if death_date else ""
                 message = "Wikipedia reports " + watch_name + " has passed away." + death_info
                 c.execute("""
                     INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
                     VALUES (%s, %s, 1, %s, %s)
                 """, (user_id, watch_id, message, False))
                 conn.commit()
-                print("[refresh] Notification created for " + watch_name + death_info)
                 if user_email:
                     wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
                     sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
@@ -947,7 +894,7 @@ async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_curren
 
         if isinstance(thumbnail, dict):
             thumbnail = thumbnail.get("source")
-        print("[refresh] Result: " + watch_name + " is_deceased=" + str(is_deceased) + " death_date=" + str(death_date) + " thumbnail=" + str(thumbnail is not None))
+
         return {
             "id": watch_id,
             "name": watch_name,
@@ -979,14 +926,9 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
     """
     Search the SSA Death Master File via Google BigQuery.
     Dataset: fiat-fiendum:ssdmf (111M records, deaths through 2014)
-    Free public dataset, no certification required.
+    Auth: service account JWT via GOOGLE_SERVICE_ACCOUNT_JSON env var.
     """
     try:
-        google_api_key = os.environ.get("GOOGLE_API_KEY", "")
-        if not google_api_key:
-            print("[dmf] No GOOGLE_API_KEY set")
-            return {"name": name, "results": [], "count": 0}
-
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
@@ -1022,60 +964,8 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
                 "parameterValue": {"value": birth_year + "%"}
             })
 
-        bq_url = "https://bigquery.googleapis.com/bigquery/v2/projects/memorywatch-dmf/queries?key=" + google_api_key
-        payload = json_lib.dumps({
-            "query": query,
-            "queryParameters": query_params,
-            "parameterMode": "NAMED",
-            "useLegacySql": False,
-            "timeoutMs": 10000
-        }).encode()
-
-        req = urllib.request.Request(
-            bq_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json_lib.loads(resp.read().decode())
-
-        results = []
-        rows = data.get("rows", [])
-        schema = data.get("schema", {}).get("fields", [])
-        field_names = [f["name"] for f in schema]
-
-        for row in rows:
-            values = [v.get("v", "") for v in row.get("f", [])]
-            record = dict(zip(field_names, values))
-            fname = (record.get("fname") or "").strip().title()
-            lname = (record.get("lname") or "").strip().title()
-            dob = (record.get("dob") or "").strip()
-            dod = (record.get("dod") or "").strip()
-            state = (record.get("state") or "").strip()
-
-            if dob and dod:
-                try:
-                    birth_yr = int(dob[:4]) if len(dob) >= 4 else 0
-                    death_yr = int(dod[:4]) if len(dod) >= 4 else 0
-                    if birth_yr and death_yr and (death_yr - birth_yr) < 18:
-                        continue
-                except Exception:
-                    pass
-
-            def fmt_date(d):
-                if not d or len(d) < 8: return d
-                try: return d[4:6].lstrip("0") + "/" + d[6:8].lstrip("0") + "/" + d[:4]
-                except: return d
-
-            results.append({
-                "name": (fname + " " + lname).strip(),
-                "birth_date": fmt_date(dob),
-                "death_date": fmt_date(dod),
-                "state": state,
-                "source": "SSA Death Master File"
-            })
-
+        data = run_bigquery(query, query_params)
+        results = parse_bq_results(data)
         print("[dmf] " + name + " -> " + str(len(results)) + " results")
         return {"name": name, "results": results, "count": len(results)}
 
@@ -1145,7 +1035,7 @@ async def get_notifications(user_id: int = Depends(get_current_user)):
         return notifications
 
 def check_wikipedia_watchlist():
-    """Background job - runs every 6 hours. Checks Wikipedia for all watchlist entries."""
+    """Background job - runs every 6 hours."""
     print("[" + str(datetime.now()) + "] Starting Wikipedia watchlist check...")
     with get_db() as conn:
         c = conn.cursor()
@@ -1184,7 +1074,7 @@ def check_wikipedia_watchlist():
                         "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
                         (watch_id, "%Wikipedia%"))
                     if not c.fetchone():
-                        death_info = (" Died: " + str(death_date)) if death_date else ("" if not extract_full_death_date(data) else " Died: " + extract_full_death_date(data))
+                        death_info = (" Died: " + str(death_date)) if death_date else ""
                         message = "Wikipedia reports " + watch_name + " has passed away." + death_info
                         c.execute("""
                             INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
@@ -1226,7 +1116,6 @@ async def startup_event():
     print("Background scheduler started (wiki-check: 6hr, scraping: suspended)")
     threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
     print("Initial Wikipedia watchlist check started")
-    # threading.Thread(target=scrape_obituaries, daemon=True).start()  # suspended
 
 if __name__ == "__main__":
     import uvicorn
