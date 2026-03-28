@@ -85,7 +85,9 @@ def parse_bq_results(rows: list) -> list:
     results = []
     for record in rows:
         fname = (str(record.get("first_name") or "")).strip().title()
+        mname = (str(record.get("middle_name") or "")).strip().title()
         lname = (str(record.get("last_name") or "")).strip().title()
+        suffix = (str(record.get("name_suffix") or "")).strip()
         dob = record.get("dob")
         dod = record.get("dod")
         # Filter under-18 deaths
@@ -97,8 +99,14 @@ def parse_bq_results(rows: list) -> list:
                     continue
             except Exception:
                 pass
+        full_name = fname
+        if mname:
+            full_name += " " + mname
+        full_name += " " + lname
+        if suffix:
+            full_name += " " + suffix
         results.append({
-            "name": (fname + " " + lname).strip(),
+            "name": full_name.strip(),
             "birth_date": fmt_date(dob),
             "death_date": fmt_date(dod),
             "state": "",
@@ -518,7 +526,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.14")
+app = FastAPI(title="Memory Watch API", version="1.5.15")
 
 app.add_middleware(
     CORSMiddleware,
@@ -585,7 +593,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.14"
+        "version": "1.5.15"
     }
 
 @app.get("/admin/stats")
@@ -868,19 +876,22 @@ async def delete_notification(notif_id: int, user_id: int = Depends(get_current_
         return {"deleted": False}
 
 @app.get("/ssdi/search")
-async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(get_current_user)):
-    """Search the SSA Death Master File via Google BigQuery."""
+async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None, suffix: str = None, user_id: int = Depends(get_current_user)):
+    """Search the SSA Death Master File via Google BigQuery.
+    Supports first/last, middle name/initial, birth year, and suffix for confidence scoring.
+    """
     try:
         parts = name.strip().split()
         first = parts[0].upper() if parts else name.upper()
         last = parts[-1].upper() if len(parts) > 1 else ""
+        mid = (middle_name or "").strip().upper().rstrip(".")
+
         if last:
             query = (
-                "SELECT first_name, last_name, dob, dod "
+                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
                 "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
                 "WHERE UPPER(last_name) = @lname "
-                "AND UPPER(first_name) LIKE @fname "
-                "LIMIT 20"
+                "AND UPPER(first_name) LIKE @fname"
             )
             query_params = [
                 {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
@@ -888,23 +899,45 @@ async def ssdi_search(name: str, birth_year: str = None, user_id: int = Depends(
             ]
         else:
             query = (
-                "SELECT first_name, last_name, dob, dod "
+                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
                 "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
-                "WHERE UPPER(first_name) LIKE @fname "
-                "LIMIT 20"
+                "WHERE UPPER(first_name) LIKE @fname"
             )
             query_params = [
                 {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
             ]
+
+        # Middle name/initial filter
+        if mid:
+            query += " AND UPPER(middle_name) LIKE @mname"
+            query_params.append({
+                "name": "mname",
+                "parameterType": {"type": "STRING"},
+                "parameterValue": {"value": mid + "%"}
+            })
+
+        # Birth year filter
         if birth_year:
-            query = query.replace("LIMIT 20", "AND dob LIKE @birth_year LIMIT 20")
+            query += " AND CAST(EXTRACT(YEAR FROM dob) AS STRING) = @birth_year"
             query_params.append({
                 "name": "birth_year",
                 "parameterType": {"type": "STRING"},
-                "parameterValue": {"value": birth_year + "%"}
+                "parameterValue": {"value": birth_year}
             })
+
+        query += " LIMIT 20"
+
         rows = run_bigquery(query, query_params)
         results = parse_bq_results(rows)
+
+        # Attach raw fields for frontend confidence scoring
+        for i, row in enumerate(rows):
+            if i < len(results):
+                results[i]["first_name"] = str(row.get("first_name") or "")
+                results[i]["middle_name"] = str(row.get("middle_name") or "")
+                results[i]["last_name"] = str(row.get("last_name") or "")
+                results[i]["suffix"] = str(row.get("name_suffix") or "")
+
         print("[dmf] " + name + " -> " + str(len(results)) + " results")
         return {"name": name, "results": results, "count": len(results)}
     except Exception as e:
