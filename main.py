@@ -526,7 +526,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.15")
+app = FastAPI(title="Memory Watch API", version="1.5.16")
 
 app.add_middleware(
     CORSMiddleware,
@@ -593,7 +593,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.15"
+        "version": "1.5.16"
     }
 
 @app.get("/admin/stats")
@@ -641,19 +641,31 @@ async def test_ssdi(name: str):
     """Test endpoint - queries BigQuery DMF for a name. No auth required."""
     try:
         parts = name.strip().split()
-        first = parts[0].upper() if parts else name.upper()
-        last = parts[-1].upper() if len(parts) > 1 else ""
-        query = (
-            "SELECT first_name, last_name, dob, dod "
-            "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
-            "WHERE UPPER(last_name) = @lname "
-            "AND UPPER(first_name) LIKE @fname "
-            "LIMIT 5"
-        )
-        query_params = [
-            {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
-            {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
-        ]
+        if len(parts) == 1:
+            last = parts[0].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "LIMIT 5"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+            ]
+        else:
+            first = parts[0].upper()
+            last = parts[-1].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "AND UPPER(first_name) LIKE @fname "
+                "LIMIT 5"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+            ]
         rows = run_bigquery(query, query_params)
         results = parse_bq_results(rows)
         return {"name": name, "count": len(results), "results": results, "bq_ok": True}
@@ -882,11 +894,23 @@ async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None
     """
     try:
         parts = name.strip().split()
-        first = parts[0].upper() if parts else name.upper()
-        last = parts[-1].upper() if len(parts) > 1 else ""
         mid = (middle_name or "").strip().upper().rstrip(".")
 
-        if last:
+        if len(parts) == 1:
+            # Single word -- treat as last name search
+            last = parts[0].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+            ]
+        else:
+            # Multiple words -- first word = first name, last word = last name
+            first = parts[0].upper()
+            last = parts[-1].upper()
             query = (
                 "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
                 "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
@@ -895,15 +919,6 @@ async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None
             )
             query_params = [
                 {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
-                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
-            ]
-        else:
-            query = (
-                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
-                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
-                "WHERE UPPER(first_name) LIKE @fname"
-            )
-            query_params = [
                 {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
             ]
 
