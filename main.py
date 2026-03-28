@@ -526,7 +526,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.16")
+app = FastAPI(title="Memory Watch API", version="1.5.17")
 
 app.add_middleware(
     CORSMiddleware,
@@ -593,7 +593,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.16"
+        "version": "1.5.17"
     }
 
 @app.get("/admin/stats")
@@ -888,13 +888,14 @@ async def delete_notification(notif_id: int, user_id: int = Depends(get_current_
         return {"deleted": False}
 
 @app.get("/ssdi/search")
-async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None, suffix: str = None, user_id: int = Depends(get_current_user)):
+async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None, suffix: str = None, offset: int = 0, user_id: int = Depends(get_current_user)):
     """Search the SSA Death Master File via Google BigQuery.
-    Supports first/last, middle name/initial, birth year, and suffix for confidence scoring.
+    Supports first/last, middle name/initial, birth year, suffix, and pagination via offset.
     """
     try:
         parts = name.strip().split()
         mid = (middle_name or "").strip().upper().rstrip(".")
+        page_size = 10
 
         if len(parts) == 1:
             # Single word -- treat as last name search
@@ -940,9 +941,12 @@ async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None
                 "parameterValue": {"value": birth_year}
             })
 
-        query += " LIMIT 20"
+        # Fetch page_size + 1 to know if more results exist
+        query += " LIMIT " + str(page_size + 1) + " OFFSET " + str(offset)
 
         rows = run_bigquery(query, query_params)
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
         results = parse_bq_results(rows)
 
         # Attach raw fields for frontend confidence scoring
@@ -953,11 +957,11 @@ async def ssdi_search(name: str, birth_year: str = None, middle_name: str = None
                 results[i]["last_name"] = str(row.get("last_name") or "")
                 results[i]["suffix"] = str(row.get("name_suffix") or "")
 
-        print("[dmf] " + name + " -> " + str(len(results)) + " results")
-        return {"name": name, "results": results, "count": len(results)}
+        print("[dmf] " + name + " offset=" + str(offset) + " -> " + str(len(results)) + " results has_more=" + str(has_more))
+        return {"name": name, "results": results, "count": len(results), "has_more": has_more, "offset": offset}
     except Exception as e:
         print("[dmf] Search error for " + name + ": " + str(e))
-        return {"name": name, "results": [], "count": 0}
+        return {"name": name, "results": [], "count": 0, "has_more": False, "offset": offset}
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
