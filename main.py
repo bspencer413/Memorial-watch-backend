@@ -498,6 +498,8 @@ class WatchlistItem(BaseModel):
     name: str
     location: Optional[str] = None
     dob: Optional[str] = None
+    is_deceased: Optional[bool] = False
+    death_year: Optional[str] = None
 
 class WatchlistResponse(BaseModel):
     id: int
@@ -526,7 +528,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.18")
+app = FastAPI(title="Memory Watch API", version="1.5.19")
 
 app.add_middleware(
     CORSMiddleware,
@@ -593,7 +595,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.18"
+        "version": "1.5.19"
     }
 
 @app.get("/admin/stats")
@@ -736,9 +738,10 @@ async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_curre
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
-            INSERT INTO watchlist (user_id, name, location, dob)
-            VALUES (%s, %s, %s, %s) RETURNING id
-        """, (user_id, item.name, item.location, item.dob))
+            INSERT INTO watchlist (user_id, name, location, dob, is_deceased, death_year)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        """, (user_id, item.name, item.location, item.dob,
+                item.is_deceased or False, item.death_year or None))
         conn.commit()
         item_id = c.fetchone()[0]
         return {"message": "Added to watchlist", "id": item_id}
