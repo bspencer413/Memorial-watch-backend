@@ -1,771 +1,1120 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>NYT Obituaries Tester</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <style>
-    * { -webkit-tap-highlight-color: transparent; font-family: Georgia, 'Times New Roman', serif; }
-    html, body { height: 100%; overflow-x: hidden; }
-    .modal-drawer {
-      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
-      background: #1a1a2e; border-radius: 20px 20px 0 0;
-      border-top: 2px solid #c8a951;
-      max-height: 88vh; overflow-y: auto;
-      transform: translateY(0); transition: transform 0.3s ease;
-      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from datetime import datetime, timedelta
+from typing import Optional, List
+import jwt
+import bcrypt
+import psycopg2
+import psycopg2.extras
+import os
+import schedule
+import threading
+import time
+import re
+import httpx
+import urllib.request
+import urllib.parse
+import urllib.error
+import json as json_lib
+from contextlib import contextmanager
+from google.cloud import bigquery
+from google.oauth2 import service_account
+
+SECRET_KEY = os.environ.get("SECRET_KEY", "memorial-watch-secret-2026")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 10080
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+FROM_EMAIL = "alerts@memorywatch.app"
+
+DB_HOST = "dpg-d6qhp3ngi27c73a3ivag-a.oregon-postgres.render.com"
+DB_USER = "memorial_watch_db_user"
+DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
+DB_NAME = "memorial_watch_db"
+DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
+
+# ── Google BigQuery via google-cloud-bigquery library ──────────────────────────
+
+def get_bq_client():
+    """Create BigQuery client from service account JSON env var."""
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not sa_json:
+        raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
+    sa_info = json_lib.loads(sa_json)
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=["https://www.googleapis.com/auth/bigquery"]
+    )
+    return bigquery.Client(project="memorywatch-ssdi", credentials=credentials)
+
+
+def run_bigquery(sql: str, params: list) -> list:
+    """Run a parameterized BigQuery query. Returns list of row dicts."""
+    client = get_bq_client()
+    bq_params = []
+    for p in params:
+        bq_params.append(bigquery.ScalarQueryParameter(
+            p["name"],
+            p["parameterType"]["type"],
+            p["parameterValue"]["value"]
+        ))
+    job_config = bigquery.QueryJobConfig(query_parameters=bq_params)
+    query_job = client.query(sql, job_config=job_config)
+    rows = query_job.result()
+    return [dict(row) for row in rows]
+
+
+def fmt_date(d):
+    """Format date object or YYYY-MM-DD string -> M/D/YYYY. Returns None if no date."""
+    if not d:
+        return None
+    try:
+        s = str(d)
+        if len(s) >= 10:
+            parts = s[:10].split("-")
+            if len(parts) == 3:
+                return str(int(parts[1])) + "/" + str(int(parts[2])) + "/" + parts[0]
+        return s if s.strip() else None
+    except Exception:
+        return str(d)
+
+
+def parse_bq_results(rows: list) -> list:
+    """Parse BigQuery row dicts into clean result dicts, filtering under-18 deaths."""
+    results = []
+    for record in rows:
+        fname = (str(record.get("first_name") or "")).strip().title()
+        mname = (str(record.get("middle_name") or "")).strip().title()
+        lname = (str(record.get("last_name") or "")).strip().title()
+        suffix = (str(record.get("name_suffix") or "")).strip()
+        dob = record.get("dob")
+        dod = record.get("dod")
+        if dob and dod:
+            try:
+                birth_yr = int(str(dob)[:4])
+                death_yr = int(str(dod)[:4])
+                if birth_yr and death_yr and (death_yr - birth_yr) < 18:
+                    continue
+            except Exception:
+                pass
+        full_name = fname
+        if mname:
+            full_name += " " + mname
+        full_name += " " + lname
+        if suffix:
+            full_name += " " + suffix
+        results.append({
+            "name": full_name.strip(),
+            "birth_date": fmt_date(dob),
+            "death_date": fmt_date(dod),
+            "state": "",
+            "source": "SSA Death Master File"
+        })
+    return results
+
+# ── Shared SSDI query logic (used by both /ssdi/search and /ssdi/proxy) ────────
+
+def run_ssdi_query(name: str, birth_year: str = None, middle_name: str = None,
+                   suffix: str = None, offset: int = 0) -> dict:
+    """Core SSDI BigQuery search — no auth, called by both endpoints."""
+    try:
+        parts = name.strip().split()
+        mid = (middle_name or "").strip().upper().rstrip(".")
+        page_size = 10
+
+        if len(parts) == 1:
+            last = parts[0].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+            ]
+        else:
+            first = parts[0].upper()
+            last = parts[-1].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, name_suffix, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "AND UPPER(first_name) LIKE @fname"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+            ]
+
+        if mid:
+            query += " AND UPPER(middle_name) LIKE @mname"
+            query_params.append({
+                "name": "mname",
+                "parameterType": {"type": "STRING"},
+                "parameterValue": {"value": mid + "%"}
+            })
+
+        if birth_year:
+            query += " AND CAST(EXTRACT(YEAR FROM dob) AS STRING) = @birth_year"
+            query_params.append({
+                "name": "birth_year",
+                "parameterType": {"type": "STRING"},
+                "parameterValue": {"value": birth_year}
+            })
+
+        query += " LIMIT " + str(page_size + 1) + " OFFSET " + str(offset)
+
+        rows = run_bigquery(query, query_params)
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
+        results = parse_bq_results(rows)
+
+        for i, row in enumerate(rows):
+            if i < len(results):
+                results[i]["first_name"]  = str(row.get("first_name")  or "")
+                results[i]["middle_name"] = str(row.get("middle_name") or "")
+                results[i]["last_name"]   = str(row.get("last_name")   or "")
+                results[i]["suffix"]      = str(row.get("name_suffix") or "")
+
+        print("[dmf] " + name + " offset=" + str(offset) + " -> " + str(len(results)) + " results has_more=" + str(has_more))
+        return {"name": name, "results": results, "count": len(results), "has_more": has_more, "offset": offset}
+    except Exception as e:
+        print("[dmf] Search error for " + name + ": " + str(e))
+        return {"name": name, "results": [], "count": 0, "has_more": False, "offset": offset}
+
+# ───────────────────────────────────────────────────────────────────────────────
+
+def init_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS watchlist (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        location TEXT,
+        dob TEXT,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS obituaries (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        name_normalized TEXT,
+        age INTEGER,
+        location TEXT,
+        date TEXT,
+        source TEXT,
+        link TEXT,
+        obit_text TEXT,
+        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        watchlist_id INTEGER NOT NULL,
+        obituary_id INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        sent BOOLEAN DEFAULT FALSE,
+        email_sent BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id),
+        FOREIGN KEY (watchlist_id) REFERENCES watchlist (id),
+        FOREIGN KEY (obituary_id) REFERENCES obituaries (id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS death_records (
+        id SERIAL PRIMARY KEY,
+        first_name TEXT,
+        last_name TEXT,
+        birth_date TEXT,
+        death_date TEXT,
+        state TEXT,
+        zip_code TEXT,
+        source TEXT DEFAULT 'SSDI',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS name_normalized TEXT")
+    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS obit_text TEXT")
+    c.execute("ALTER TABLE obituaries ADD COLUMN IF NOT EXISTS link TEXT")
+    c.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS email_sent BOOLEAN DEFAULT FALSE")
+    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS is_deceased BOOLEAN DEFAULT FALSE")
+    c.execute("UPDATE watchlist SET is_deceased = FALSE WHERE is_deceased IS NULL")
+    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wikipedia_description TEXT")
+    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS death_year TEXT")
+    c.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS wiki_last_checked TIMESTAMP")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_obituaries_name ON obituaries (name)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_obituaries_name_normalized ON obituaries (name_normalized)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_death_records_last_name ON death_records (last_name)")
+    conn.commit()
+    conn.close()
+
+@contextmanager
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+def normalize_name(name: str) -> str:
+    if not name:
+        return name
+    name = name.strip()
+    if ',' in name:
+        parts = name.split(',', 1)
+        name = parts[1].strip() + " " + parts[0].strip()
+    name = re.sub(r"\b\w+'\w+\b", lambda m: m.group(0).title(), name)
+    return name.title()
+
+def send_email_notification(to_email: str, watchlist_name: str, obit_name: str, obit_location: str, obit_link: str):
+    if not RESEND_API_KEY:
+        print("Email not configured - skipping email to " + to_email)
+        return False
+    try:
+        location_text = obit_location or "Unknown"
+        link_text = '<p><a href="' + str(obit_link) + '">Read more</a></p>' if obit_link else ""
+        html_content = (
+            '<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto; padding: 20px;">'
+            '<h2 style="color: #7c3aed;">Memory Watch Alert</h2>'
+            '<p>We found a possible match for <strong>' + watchlist_name + '</strong> on your watchlist.</p>'
+            '<p><strong>Name:</strong> ' + obit_name + '</p>'
+            '<p><strong>Location:</strong> ' + location_text + '</p>'
+            + link_text +
+            '<hr style="border: 1px solid #e5e7eb; margin: 20px 0;">'
+            '<p style="color: #6b7280; font-size: 12px;">You are receiving this because you added '
+            + watchlist_name + ' to your Memory Watch watchlist. '
+            'To manage your watchlist, visit <a href="https://memorywatch.app">memorywatch.app</a></p>'
+            '</div>'
+        )
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": "Bearer " + RESEND_API_KEY, "Content-Type": "application/json"},
+            json={
+                "from": FROM_EMAIL,
+                "to": [to_email],
+                "subject": "Memory Watch Alert: " + watchlist_name,
+                "html": html_content
+            },
+            timeout=10
+        )
+        return response.status_code == 200
+    except Exception as e:
+        print("Email error: " + str(e))
+        return False
+
+def fetch_wiki_data(name: str) -> dict:
+    params = urllib.parse.urlencode({
+        "action": "query",
+        "titles": name,
+        "prop": "extracts|pageprops|categories|info",
+        "exintro": "true",
+        "explaintext": "true",
+        "redirects": "1",
+        "inprop": "url",
+        "cllimit": "50",
+        "format": "json"
+    })
+    url = "https://en.wikipedia.org/w/api.php?" + params
+    req = urllib.request.Request(url, headers={"User-Agent": "MemoryWatch/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json_lib.loads(resp.read().decode())
+    pages = data.get("query", {}).get("pages", {})
+    if not pages:
+        return {}
+    page = list(pages.values())[0]
+    if "missing" in page:
+        return {}
+    title = page.get("title", name)
+    extract = page.get("extract", "")
+    categories = [c.get("title", "") for c in page.get("categories", [])]
+    death_year_from_cat = None
+    for cat in categories:
+        m = re.search(r"(\d{4}) deaths", cat)
+        if m:
+            death_year_from_cat = m.group(1)
+            break
+    death_from_category = any(
+        any(word in cat.lower() for word in ["deaths", "murdered", "executed"])
+        for cat in categories
+    )
+    page_type = "standard"
+    if "disambiguation" in page.get("pageprops", {}):
+        page_type = "disambiguation"
+    elif "(disambiguation)" in title:
+        page_type = "disambiguation"
+    description = ""
+    if extract:
+        first_sent = extract.split(".")[0]
+        description = first_sent[:150] if first_sent else ""
+    thumbnail = None
+    birth_date = None
+    death_date_summary = None
+    try:
+        sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title)
+        sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
+        with urllib.request.urlopen(sum_req, timeout=10) as sum_resp:
+            sum_data = json_lib.loads(sum_resp.read().decode())
+            thumb = sum_data.get("thumbnail")
+            thumbnail = thumb.get("source") if thumb else None
+            birth_date = sum_data.get("birth_date")
+            death_date_summary = sum_data.get("death_date")
+            if sum_data.get("description"):
+                description = sum_data.get("description")
+    except Exception:
+        pass
+    death_date = death_date_summary or death_year_from_cat
+    return {
+        "title": title,
+        "extract": extract,
+        "description": description,
+        "type": page_type,
+        "death_date": death_date,
+        "death_from_category": death_from_category,
+        "thumbnail": thumbnail,
+        "birth_date": birth_date,
     }
-    .modal-overlay { position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,0.65); }
-  </style>
-</head>
-<body style="margin:0;padding:0;">
-<div id="root"></div>
-<script type="text/babel">
-const { useState, useEffect } = React;
 
-const NYT_BASE    = 'https://nyt-obituaries-api.onrender.com';
-const SSDI_BASE   = 'https://memorial-watch-backend-2.onrender.com';
-const APP_VERSION = '0.4.11';
-const BG_IMAGE    = 'url(background.jpg)';
-const LOGO_SRC    = '3brains_one_mission.png';
+def normalize_name_for_wiki(name: str) -> str:
+    words = name.strip().split()
+    result = []
+    for i, word in enumerate(words):
+        if len(word) == 1 and word.isalpha() and i > 0 and i < len(words) - 1:
+            result.append(word + ".")
+        else:
+            result.append(word)
+    return " ".join(result)
 
-const CONF_ORDER = { 'High':0, 'Likely':1, 'Possible':2, 'Related':3 };
-const iClass     = "w-full px-4 py-3 rounded-xl text-lg bg-white/10 text-white placeholder-white/40 border-none outline-none focus:ring-2 focus:ring-yellow-600";
-const cardClass  = "bg-black/40 rounded-2xl p-4 shadow-lg border border-yellow-900/30 backdrop-blur-sm";
-const normName   = (n) => (n||'').toLowerCase().trim().replace(/\s+/g,' ');
+def fetch_wiki_data_smart(name: str) -> dict:
+    data = fetch_wiki_data(name)
+    if data.get("type") != "disambiguation" and data.get("extract"):
+        return data
+    name_parts = [p for p in name.strip().split() if p.replace(".", "")]
+    last_name = name_parts[-1].lower().replace(".", "") if name_parts else ""
+    first_name = name_parts[0].lower() if name_parts else ""
+    print("[wiki_smart] Resolving disambiguation for: " + name + " (last=" + last_name + ")")
+    try:
+        search_url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(name) + "&srlimit=8&format=json&origin=*"
+        req = urllib.request.Request(search_url, headers={"User-Agent": "MemoryWatch/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            search_data = json_lib.loads(resp.read().decode())
+        results = search_data.get("query", {}).get("search", [])
+        for result in results:
+            title = result.get("title", "")
+            title_lower = title.lower()
+            if "(disambiguation)" in title_lower:
+                continue
+            if last_name and last_name not in title_lower:
+                continue
+            if first_name and first_name not in title_lower:
+                print("[wiki_smart] Skipping " + title + " - first name mismatch (want " + first_name + ")")
+                continue
+            try:
+                candidate = fetch_wiki_data(title)
+                if candidate.get("type") == "disambiguation":
+                    continue
+                if not candidate.get("extract"):
+                    continue
+                print("[wiki_smart] Resolved " + name + " -> " + title)
+                return candidate
+            except Exception:
+                continue
+    except Exception as e:
+        print("[wiki_smart] Search failed: " + str(e))
+    print("[wiki_smart] Could not resolve: " + name)
+    return data
 
-const scoreResult = (result, searchFirst, searchMiddle, searchLast, searchBirthYear, searchSuffix) => {
-  let score = 0;
-  const rFirst  = (result.first_name  || '').toUpperCase();
-  const rMiddle = (result.middle_name || '').toUpperCase();
-  const rLast   = (result.last_name   || '').toUpperCase();
-  const rSuffix = (result.suffix      || '').toUpperCase();
-  const rDob    = (result.birth_date  || '');
-  const sFirst  = (searchFirst  || '').toUpperCase();
-  const sMiddle = (searchMiddle || '').toUpperCase().replace('.','');
-  const sLast   = (searchLast   || '').toUpperCase();
-  const sSuffix = (searchSuffix || '').toUpperCase();
-  score += sFirst ? 30 : 50;
-  if (sFirst) {
-    if (rFirst === sFirst) score += 30;
-    else if (rFirst.startsWith(sFirst) && rFirst.length <= sFirst.length + 1) score += 15;
-  }
-  if (sMiddle && rMiddle) {
-    if (rMiddle === sMiddle || rMiddle.startsWith(sMiddle) || sMiddle.startsWith(rMiddle)) score += 30;
-  }
-  if (searchBirthYear && rDob && rDob.includes(searchBirthYear)) score += 15;
-  if (sSuffix && rSuffix && rSuffix === sSuffix) score += 5;
-  return score;
-};
+def extract_full_death_date(data: dict) -> str:
+    import re as _re
+    month_names = "January|February|March|April|May|June|July|August|September|October|November|December"
+    full_date_pattern = "(?:" + month_names + r") \d{1,2}, \d{4}"
+    extract = data.get("extract", "")
+    description = data.get("description", "")
+    matches = _re.findall(full_date_pattern, extract)
+    if len(matches) >= 2:
+        return matches[-1]
+    if len(matches) == 1:
+        first_sentence = extract.split(".")[0]
+        if _re.search(r"died|death|passed|\u2013|\u2014", first_sentence, _re.IGNORECASE):
+            return matches[0]
+    death_date = data.get("death_date", "")
+    if death_date and _re.search(full_date_pattern, str(death_date)):
+        return str(death_date)
+    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", description)
+    if m:
+        return m.group(1)
+    m = _re.search(r"\d{4}\s*[\u2013\u2014-]+\s*(\d{4})", extract.split(".")[0] if extract else "")
+    if m:
+        return m.group(1)
+    if death_date:
+        return str(death_date)
+    return data.get("death_year_from_cat", "") or ""
 
-const confidenceLabel = (score) => {
-  if (score >= 90) return 'Probable Match';
-  if (score >= 60) return 'Possible Match';
-  return 'Partial Match';
-};
+def is_deceased_from_wiki(data: dict) -> bool:
+    extract = data.get("extract", "")
+    description = data.get("description", "")
+    death_date = data.get("death_date", None)
+    page_type = data.get("type", "")
+    death_from_category = data.get("death_from_category", False)
+    if page_type == "disambiguation":
+        return False
+    if death_from_category:
+        return True
+    if death_date:
+        return True
+    first_sentence = extract.split(".")[0] if extract else ""
+    if re.search(r"\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)", first_sentence):
+        return True
+    if re.search(r"\(\d{4}\s*[\u2013\u2014-]+\s*\d{4}\)", description):
+        return True
+    if re.search(r"\([^)]*born\s+\w+\s+\d+,\s+\d{4}\)", first_sentence):
+        return False
+    if re.search(r"(died|death|passed away|deceased)", extract, re.IGNORECASE):
+        return True
+    if re.search(r"(died|death|deceased)", description, re.IGNORECASE):
+        return True
+    return False
 
-const SearchIcon   = () => <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>;
-const HeartIcon    = () => <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>;
-const MemoriesIcon = () => <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>;
-const TrashIcon    = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>;
-const EditIcon     = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>;
-const PlusIcon     = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg>;
-const CheckIcon    = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/></svg>;
+def search_legacy_oneoff(name: str) -> list:
+    results = []
+    try:
+        parts = name.strip().split()
+        first = parts[0] if parts else name
+        last = parts[-1] if len(parts) > 1 else ""
+        search_url = (
+            "https://www.legacy.com/obituaries/search?firstName=" +
+            urllib.parse.quote(first) +
+            "&lastName=" + urllib.parse.quote(last)
+        )
+        req = urllib.request.Request(search_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+            import re as _re
+            json_ld_matches = _re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, _re.DOTALL)
+            for match in json_ld_matches[:5]:
+                try:
+                    obj = json_lib.loads(match)
+                    if isinstance(obj, list):
+                        for item in obj:
+                            if item.get("@type") in ["Person", "Obituary"]:
+                                results.append({
+                                    "name": item.get("name", name),
+                                    "date": item.get("deathDate", ""),
+                                    "location": item.get("address", {}).get("addressLocality", "") if isinstance(item.get("address"), dict) else "",
+                                    "link": item.get("url", search_url),
+                                    "obit_text": item.get("description", "")
+                                })
+                    elif isinstance(obj, dict) and obj.get("@type") in ["Person", "Obituary"]:
+                        results.append({
+                            "name": obj.get("name", name),
+                            "date": obj.get("deathDate", ""),
+                            "location": obj.get("address", {}).get("addressLocality", "") if isinstance(obj.get("address"), dict) else "",
+                            "link": obj.get("url", search_url),
+                            "obit_text": obj.get("description", "")
+                        })
+                except Exception:
+                    continue
+            if results:
+                print("Legacy direct search found " + str(len(results)) + " results for " + name)
+                return results[:5]
+    except Exception as e:
+        print("Legacy direct search error: " + str(e))
+    try:
+        normalized = normalize_name(name)
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT name, location, date, link, obit_text FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s ORDER BY scraped_at DESC LIMIT 5",
+                ("%" + name + "%", "%" + normalized + "%")
+            )
+            for row in c.fetchall():
+                results.append({
+                    "name": row[0] or name,
+                    "date": row[2] or "",
+                    "location": row[1] or "",
+                    "link": row[3] or "",
+                    "obit_text": row[4] or ""
+                })
+        if results:
+            print("Legacy DB fallback found " + str(len(results)) + " results for " + name)
+    except Exception as e:
+        print("Legacy DB fallback error: " + str(e))
+    return results
 
-const PageWrapper = ({ children, dark }) => (
-  <div style={{ minHeight:'100dvh', width:'100%', position:'relative', paddingBottom:'5rem',
-    backgroundColor:'#1a1a2e', backgroundImage:BG_IMAGE,
-    backgroundSize:'cover', backgroundPosition:'center top',
-    backgroundRepeat:'no-repeat', backgroundAttachment:'scroll' }}>
-    <div style={{ position:'fixed', inset:0, zIndex:0, pointerEvents:'none',
-      ...(dark
-        ? { backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)', backgroundColor:'rgba(10,4,0,0.55)' }
-        : { background:'linear-gradient(to bottom, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.35) 10%, rgba(0,0,0,0.22) 30%, rgba(0,0,0,0.58) 100%)' }
-      )
-    }} />
-    <div style={{ position:'relative', zIndex:10 }}>{children}</div>
-  </div>
-);
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
 
-const ConfBadge = ({ conf }) => {
-  const s = { 'High':'bg-green-800 text-green-200','Likely':'bg-blue-800 text-blue-200','Possible':'bg-yellow-800 text-yellow-200','Related':'bg-gray-700 text-gray-300' };
-  return <span className={'inline-block text-xs font-bold tracking-widest uppercase px-2 py-0.5 rounded-md mb-2 '+(s[conf]||s['Related'])}>{conf}</span>;
-};
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
 
-const SuffixSelect = ({ value, onChange }) => (
-  <select value={value} onChange={onChange}
-    className={iClass+' appearance-none cursor-pointer'}
-    style={{ backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23c8a951' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\")", backgroundRepeat:'no-repeat', backgroundPosition:'right 14px center', backgroundSize:'12px' }}>
-    <option value="">Suffix: Jr., Sr., III — if applicable</option>
-    <option value="Jr.">Jr.</option><option value="Sr.">Sr.</option>
-    <option value="II">II</option><option value="III">III</option>
-    <option value="IV">IV</option><option value="Esq.">Esq.</option>
-  </select>
-);
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
-const Header = ({ apiVersion }) => (
-  <div className="text-center" style={{ paddingTop:'16px' }}>
-    <div className="flex justify-center items-center gap-2 mb-2">
-      <span className="inline-block bg-yellow-600 text-black text-xs font-bold px-3 py-0.5 rounded tracking-widest">v{APP_VERSION}</span>
-      <span className="inline-block border border-yellow-600 text-yellow-800 text-xs font-bold px-3 py-0.5 rounded tracking-widest">api {apiVersion}</span>
-    </div>
-    <img src={LOGO_SRC} alt="3Brains" className="h-12 w-auto mx-auto mb-1" />
-    <p className="text-xs tracking-widest uppercase" style={{ color:'rgba(80,60,0,0.75)' }}>NYT Obituaries Tester</p>
-  </div>
-);
+class WatchlistItem(BaseModel):
+    name: str
+    location: Optional[str] = None
+    dob: Optional[str] = None
+    is_deceased: Optional[bool] = False
+    death_year: Optional[str] = None
 
-const BottomNav = ({ page, setPage, watchlistCount, memoriesCount, apiVersion }) => {
-  const t = (name, label, Icon) => (
-    <button onClick={() => setPage(name)}
-      className={'flex flex-col items-center gap-0.5 px-1 py-1 relative '+(page===name?'text-yellow-500':'text-gray-400')}>
-      <Icon /><span className="text-sm font-medium">{label}</span>
-      {name==='watchlist' && watchlistCount>0 && <span className="absolute top-0 right-1 bg-green-600 text-white text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center">{watchlistCount}</span>}
-      {name==='memories'  && memoriesCount>0  && <span className="absolute top-0 right-1 bg-yellow-700 text-white text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center">{memoriesCount}</span>}
-    </button>
-  );
-  return (
-    <div style={{ position:'fixed', bottom:0, left:0, right:0, backgroundColor:'rgba(10,0,0,0.95)', backdropFilter:'blur(8px)', borderTop:'2px solid #c8a951', padding:'0.5rem 1rem', paddingBottom:'max(0.5rem, env(safe-area-inset-bottom))' }}>
-      <div className="flex justify-around max-w-sm mx-auto">
-        {t('search','Search',SearchIcon)}
-        {t('watchlist','Watchlist',HeartIcon)}
-        {t('memories','Memories',MemoriesIcon)}
-      </div>
-      <p className="text-center text-gray-600 text-xs mt-1">app v{APP_VERSION} | api {apiVersion}</p>
-    </div>
-  );
-};
+class WatchlistResponse(BaseModel):
+    id: int
+    name: str
+    location: Optional[str]
+    dob: Optional[str]
+    status: str
+    created_at: str
+    is_deceased: Optional[bool] = False
+    wikipedia_description: Optional[str] = None
+    death_year: Optional[str] = None
 
-const SsdiRecordDrawer = ({ record, onClose, onAddWatchlist, onSaveMemory, checkWatchlist, checkMemories }) => {
-  if (!record) return null;
-  const r = record;
-  const alreadyWatching = checkWatchlist(r.name);
-  const inMemories      = checkMemories(r.name);
-  const byear    = r.birth_date ? parseInt((r.birth_date||'').split('/').pop()) : null;
-  const isPassed = !!(r.death_date || (byear && byear < new Date().getFullYear() - 100));
-  return (
-    <>
-      <div className="modal-overlay" onClick={onClose} />
-      <div className="modal-drawer">
-        <div style={{ width:40, height:4, background:'rgba(255,255,255,0.2)', borderRadius:2, margin:'12px auto 0' }} />
-        <div className="flex justify-between items-center px-4 pt-3 pb-2 border-b border-yellow-900/30">
-          <h3 className="text-white font-bold text-base flex-1 pr-3">{r.name}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl font-bold leading-none">×</button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div className={'px-4 py-2 rounded-xl flex items-center gap-3 '+(isPassed?'bg-gray-800':'bg-green-800')}>
-            <span className="text-white font-black tracking-widest text-base">{isPassed?'Passed Away':'No Death Record Found'}</span>
-            {r.death_date && <span className="text-white/70 text-sm ml-auto">Died: {r.death_date}</span>}
-          </div>
-          <div className="bg-gray-800/60 rounded-xl p-3 border border-yellow-900/20">
-            <p className="text-white font-bold text-lg mb-1">{r.name}</p>
-            {r.middle_name && <p className="text-gray-400 text-sm">Middle: {r.middle_name}</p>}
-            {r.birth_date  && <p className="text-gray-300 text-base">Born: {r.birth_date}</p>}
-            {r.death_date  && <p className="text-gray-300 text-base">Died: {r.death_date}</p>}
-            {r.state       && <p className="text-gray-400 text-sm">State: {r.state}</p>}
-            <p className="text-gray-500 text-xs mt-2">Source: SSDI (records through 2014)</p>
-          </div>
-          {(() => {
-            if (inMemories)      return <p className="text-yellow-400 text-base font-bold text-center">Already in Memories</p>;
-            if (alreadyWatching) return <p className="text-green-400 text-base font-bold text-center">Already on Watchlist</p>;
-            if (isPassed) return (
-              <button onClick={() => { onSaveMemory({ _type:'memory_entry', saveTitle:r.name, name:r.name, headline:r.name, pub_date:r.death_date||'', byline:'', url:'', is_deceased:true, dod:r.death_date||null, death_year:r.death_date?(r.death_date.split('/').pop()||null):null, added:new Date().toLocaleDateString() }); onClose(); }}
-                className="w-full py-4 bg-gray-700 hover:bg-gray-600 border border-gray-500 text-white rounded-xl font-bold text-xl flex items-center justify-center gap-2">
-                <PlusIcon /> Save to Memories
-              </button>
-            );
-            return (
-              <button onClick={() => { onAddWatchlist(r.name); onClose(); }}
-                className="w-full py-4 bg-yellow-600 hover:bg-yellow-700 text-black rounded-xl font-bold text-xl flex items-center justify-center gap-2">
-                <PlusIcon /> Add to Watchlist
-              </button>
-            );
-          })()}
-          <button onClick={onClose} className="w-full py-3 bg-white/8 border border-white/15 text-white/70 rounded-xl text-base font-bold">Close</button>
-        </div>
-      </div>
-    </>
-  );
-};
+class ObituarySearch(BaseModel):
+    name: str
+    location: Optional[str] = None
+    birth_year: Optional[str] = None
 
-const SsdiResultsBlock = ({ results, searchFirst, searchMiddle, searchLast, searchBirthYear, searchSuffix, hasMore, onLoadMore, loadingMore, onSelect, ssdiPage, setSsdiPage }) => {
-  if (!results || results.length === 0) return null;
-  const tooMany = results.length >= 10 && !searchMiddle && !searchBirthYear;
-  const visible = results.slice(0, ssdiPage * 10);
-  const clientHasMore = results.length > visible.length;
-  const ShowMoreBtn = () => (clientHasMore || hasMore) ? (
-    <button onClick={() => { if (clientHasMore) setSsdiPage(p => p+1); else if (onLoadMore) onLoadMore(); }}
-      disabled={loadingMore}
-      className="w-full py-2.5 bg-gray-700 border border-yellow-800/50 text-white rounded-xl text-base font-bold mt-1 mb-1">
-      {loadingMore ? 'Loading…' : 'Show 10 more ↓'}
-    </button>
-  ) : null;
-  return (
-    <div className="mb-3 p-3 bg-gray-800/60 rounded-xl border border-yellow-900/30">
-      <p className="text-yellow-300 text-base font-bold mb-2">SSDI records — tap a name to view</p>
-      {tooMany && <div className="mb-2 p-2 bg-yellow-900/30 border border-yellow-700/40 rounded-lg"><p className="text-yellow-300 text-xs">Many matches — add middle name, initial or birth year to narrow results.</p></div>}
-      <ShowMoreBtn />
-      {visible.map((r, i) => {
-        const score = r._score !== undefined ? r._score : 50;
-        const conf  = confidenceLabel(score);
-        const confColor = conf==='Probable Match'?'text-green-400':conf==='Possible Match'?'text-yellow-400':'text-gray-400';
-        return (
-          <div key={i} onClick={() => onSelect(r)}
-            className="mb-2 pb-2 border-b border-white/10 last:border-0 cursor-pointer hover:bg-white/5 rounded px-1 transition-colors">
-            <div className="flex items-start justify-between">
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-base font-semibold underline decoration-dotted">{r.name}</p>
-                {r.middle_name && <p className="text-gray-400 text-xs">Middle: {r.middle_name}</p>}
-              </div>
-              <span className={'text-xs font-bold ml-2 shrink-0 '+confColor}>{conf}</span>
-            </div>
-            {r.birth_date && <p className="text-gray-400 text-xs">Born: {r.birth_date}</p>}
-            {r.death_date
-              ? <p className="text-white text-xs font-semibold">Died: {r.death_date}</p>
-              : <p className="text-gray-500 text-xs italic">No death record (SSDI through 2014)</p>}
-          </div>
-        );
-      })}
-      <ShowMoreBtn />
-    </div>
-  );
-};
+class ObituaryResult(BaseModel):
+    id: int
+    name: str
+    age: Optional[int]
+    location: Optional[str]
+    date: Optional[str]
+    source: str
+    link: Optional[str]
+    obit_text: Optional[str]
+    confidence: str
 
-const RecordDrawer = ({ record, onClose, onSave, alreadySaved, isMemoryView }) => {
-  const [moreOpen, setMoreOpen] = useState(false);
-  useEffect(() => { setMoreOpen(false); }, [record]);
-  if (!record) return null;
-  const r = record;
+app = FastAPI(title="Memory Watch API", version="1.5.20")
 
-  if (r._type === 'watchlist_entry' || r._type === 'memory_entry') {
-    const isDeceased = !!(r.dod || r.death_year || r.is_deceased);
-    const dodDisplay = r.dod || r.death_year || null;
-    return (
-      <>
-        <div className="modal-overlay" onClick={onClose} />
-        <div className="modal-drawer">
-          <div style={{ width:40, height:4, background:'rgba(255,255,255,0.2)', borderRadius:2, margin:'12px auto 0' }} />
-          <div className="flex justify-between items-center px-4 pt-3 pb-2 border-b border-yellow-900/30">
-            <h3 className="text-white font-bold text-base flex-1 pr-3">{r.name||r.saveTitle}</h3>
-            <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl font-bold leading-none">×</button>
-          </div>
-          <div className="p-4 space-y-3">
-            <div className={'px-4 py-2 rounded-xl flex items-center gap-3 '+(isDeceased?'bg-gray-800':'bg-green-800')}>
-              <span className="text-white font-black tracking-widest text-base">{isDeceased?'Passed Away':'Saved'}</span>
-              {dodDisplay && <span className="text-white/70 text-sm ml-auto">Died: {dodDisplay}</span>}
-            </div>
-            <p className="text-white text-xl font-bold">{r.name||r.saveTitle}</p>
-            {r.added && <p className="text-gray-400 text-sm">Added: {r.added}</p>}
-            {!isMemoryView && !alreadySaved && (
-              <button onClick={() => onSave(r)} className="w-full py-3 bg-green-800 hover:bg-green-700 text-white rounded-xl font-bold text-base">
-                + Save to Memories
-              </button>
-            )}
-            <button onClick={onClose} className="w-full py-3 bg-white/8 border border-white/15 text-white/70 rounded-xl text-base font-bold">Close</button>
-          </div>
-        </div>
-      </>
-    );
-  }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-  const conf    = r.confidence||'Related';
-  const confBg  = conf==='High'?'bg-gray-800':conf==='Likely'?'bg-blue-900':conf==='Possible'?'bg-yellow-900':'bg-gray-700';
-  const preview = r.abstract||r.snippet||r.body_text||'';
-  const parts   = [];
-  if (r.lead_paragraph && r.lead_paragraph.trim()) parts.push(r.lead_paragraph.trim());
-  if (r.snippet && r.snippet.trim() && r.snippet.trim() !== (r.lead_paragraph||'').trim()) parts.push(r.snippet.trim());
-  const fullText = parts.join('\n\n')||r.body_text||'';
-  const hasMore  = fullText.trim() && fullText.replace(/\s+/g,' ').trim() !== preview.replace(/\s+/g,' ').trim() && fullText.length > preview.length + 60;
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-  return (
-    <>
-      <div className="modal-overlay" onClick={onClose} />
-      <div className="modal-drawer">
-        <div style={{ width:40, height:4, background:'rgba(255,255,255,0.2)', borderRadius:2, margin:'12px auto 0' }} />
-        <div className="flex justify-between items-center px-4 pt-3 pb-2 border-b border-yellow-900/30">
-          <h3 className="text-white font-bold text-base flex-1 pr-3 leading-snug">{r.headline}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl font-bold leading-none">×</button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div className={'px-4 py-2 rounded-xl flex items-center gap-3 '+confBg}>
-            <span className="text-white font-black tracking-widest text-base">{conf}</span>
-            <span className="text-white/60 text-xs ml-auto">{r.news_desk?'NY Times · '+r.news_desk:'NY Times'}</span>
-          </div>
-          {r.photo_url && <img src={r.photo_url} alt="" className="w-full max-h-52 object-cover rounded-xl" onError={e=>e.target.style.display='none'} />}
-          <h2 className="text-white text-xl font-bold leading-snug">{r.headline}</h2>
-          <p className="text-gray-400 text-sm">{[r.pub_date,r.byline,r.section_name].filter(Boolean).join('  ·  ')}</p>
-          {preview ? <p className="text-gray-200 text-lg leading-relaxed">{preview}</p> : null}
-          {hasMore && !moreOpen && (
-            <button onClick={() => setMoreOpen(true)} className="w-full py-3 bg-yellow-900/20 border border-yellow-700/30 text-yellow-300 rounded-xl text-base font-bold">More ▾</button>
-          )}
-          {moreOpen && <p className="text-gray-200 text-lg leading-relaxed whitespace-pre-line">{fullText}</p>}
-          <div className="space-y-2 pt-2">
-            <button onClick={() => onSave(r)} disabled={alreadySaved}
-              className={'w-full py-3 rounded-xl font-bold text-base '+(alreadySaved?'bg-gray-700 text-gray-500 cursor-default':'bg-green-800 hover:bg-green-700 text-white')}>
-              {alreadySaved ? '✓ In Memories' : '+ Save to Memories'}
-            </button>
-            {/* Copy Article Link — reserved for premium/NYT partnership */}
-            <button onClick={onClose} className="w-full py-3 bg-white/8 border border-white/15 text-white/70 rounded-xl text-base font-bold">Back to Search</button>
-          </div>
-          <div className="p-2 bg-yellow-900/10 border border-yellow-800/20 rounded-xl">
-            <p className="text-yellow-700 text-xs text-center">Content provided by The New York Times.</p>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-};
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-const SearchPage = ({ onAddWatchlist, onSaveMemory, checkWatchlist, checkMemories, setApiVersion, setPage }) => {
-  const [nw,           setNw]           = useState({ name:'', middle:'', suffix:'', birthYear:'' });
-  const [searched,     setSearched]     = useState(false);
-  const [searching,    setSearching]    = useState(false);
-  const [statusMsg,    setStatusMsg]    = useState('');
-  const [nytResults,   setNytResults]   = useState([]);
-  const [ssdiResults,  setSsdiResults]  = useState([]);
-  const [ssdiHasMore,  setSsdiHasMore]  = useState(false);
-  const [ssdiOffset,   setSsdiOffset]   = useState(0);
-  const [ssdiPage,     setSsdiPage]     = useState(1);
-  const [ssdiLoading,  setSsdiLoading]  = useState(false);
-  const [ssdiDrawer,   setSsdiDrawer]   = useState(null);
-  const [articleDrawer,setArticleDrawer]= useState(null);
-  const [debugRaw,     setDebugRaw]     = useState(null);
-  const [debugOpen,    setDebugOpen]    = useState(false);
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
-  const buildFullName = () => [nw.name, nw.suffix].filter(Boolean).join(' ').trim();
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-  const clearSearch = () => {
-    setNw({ name:'', middle:'', suffix:'', birthYear:'' });
-    setSearched(false); setNytResults([]); setSsdiResults([]);
-    setSsdiHasMore(false); setSsdiOffset(0); setSsdiPage(1);
-    setStatusMsg(''); setDebugRaw(null); setDebugOpen(false);
-  };
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid authentication")
+        return user_id
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-  const doSearch = async () => {
-    const name = (nw.name||'').trim();
-    if (!name) return;
-    setSearching(true); setSearched(false);
-    setNytResults([]); setSsdiResults([]);
-    setSsdiHasMore(false); setSsdiOffset(0); setSsdiPage(1);
-    setStatusMsg('Searching NY Times…');
+def calculate_confidence(search_name, found_name, search_loc, found_loc):
+    search_name = search_name.lower()
+    found_name = found_name.lower()
+    if search_name == found_name:
+        if search_loc and found_loc and search_loc.lower() in found_loc.lower():
+            return "high"
+        return "medium"
+    if search_name in found_name or found_name in search_name:
+        return "medium"
+    return "low"
 
-    const nameParts = name.split(/\s+/);
-    const firstName = nameParts[0]||'';
-    const lastName  = nameParts.slice(1).join(' ')||'';
+def extract_age(text: str) -> Optional[int]:
+    match = re.search(r'\b(\d{1,3})\b', text)
+    if match:
+        age = int(match.group(1))
+        if 0 < age < 120:
+            return age
+    return None
 
-    const nytParams = new URLSearchParams();
-    nytParams.set('name',[name,nw.middle,nw.suffix].filter(Boolean).join(' '));
-    if (firstName)    nytParams.set('first_name',    firstName);
-    if (lastName)     nytParams.set('last_name',     lastName);
-    if (nw.middle)    nytParams.set('middle_initial', nw.middle.trim().toUpperCase());
-    if (nw.suffix)    nytParams.set('suffix',         nw.suffix);
-    if (nw.birthYear) nytParams.set('birth_year',     nw.birthYear);
+def extract_location(text: str) -> Optional[str]:
+    match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+[A-Z]{2})', text)
+    if match:
+        return match.group(1)
+    return None
 
-    const ssdiName   = firstName === lastName ? firstName : (firstName+' '+lastName).trim();
-    const ssdiParams = new URLSearchParams({ name: ssdiName });
-    if (nw.middle)    ssdiParams.append('middle_name', nw.middle.trim());
-    if (nw.birthYear) ssdiParams.append('birth_year',  nw.birthYear);
-    ssdiParams.append('offset','0');
+@app.api_route("/health", methods=["GET", "HEAD"])
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.5.20"
+    }
 
-    // NYT first — sequential to avoid BigQuery collision
-    let nytData  = { results:[] };
-    let ssdiData = { results:[], has_more:false };
+@app.get("/admin/stats")
+async def get_stats():
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM obituaries")
+        obit_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM death_records")
+        death_count = c.fetchone()[0]
+        c.execute("SELECT name, date, source FROM obituaries ORDER BY scraped_at DESC LIMIT 5")
+        recent = c.fetchall()
+        return {
+            "obituaries": obit_count,
+            "death_records": death_count,
+            "most_recent": [{"name": r[0], "date": r[1], "source": r[2]} for r in recent],
+            "scraping": "suspended"
+        }
 
-    try {
-      const nytRes = await fetch(NYT_BASE+'/nyt/search?'+nytParams.toString());
-      nytData = await nytRes.json();
-      if (nytData.version) setApiVersion(nytData.version);
-    } catch(e) { console.log('NYT error:', e); }
+@app.get("/admin/wiki-check-now")
+async def wiki_check_now():
+    threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
+    return {"message": "Wikipedia watchlist check started"}
 
-    setStatusMsg('Searching SSDI records…');
+@app.get("/admin/test-refresh/{name}")
+async def test_refresh(name: str):
+    try:
+        data = fetch_wiki_data(name)
+        is_deceased = is_deceased_from_wiki(data)
+        return {
+            "name": name,
+            "is_deceased": is_deceased,
+            "death_date": data.get("death_date"),
+            "description": data.get("description"),
+            "extract_first_sentence": (data.get("extract") or "").split(".")[0],
+            "type": data.get("type"),
+            "wiki_ok": True
+        }
+    except Exception as e:
+        return {"name": name, "wiki_ok": False, "error": str(e)}
 
-    // SSDI via MW backend proxy — uses working BigQuery credentials
-    try {
-      const ssdiRes = await fetch(SSDI_BASE+'/ssdi/proxy?'+ssdiParams.toString());
-      if (ssdiRes.ok) ssdiData = await ssdiRes.json();
-    } catch(e) { console.log('SSDI error:', e); }
+@app.get("/admin/test-ssdi/{name}")
+async def test_ssdi(name: str):
+    try:
+        parts = name.strip().split()
+        if len(parts) == 1:
+            last = parts[0].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "LIMIT 5"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+            ]
+        else:
+            first = parts[0].upper()
+            last = parts[-1].upper()
+            query = (
+                "SELECT first_name, middle_name, last_name, dob, dod "
+                "FROM `fiat-fiendum.ssdmf.ssdmf_most_recent` "
+                "WHERE UPPER(last_name) = @lname "
+                "AND UPPER(first_name) LIKE @fname "
+                "LIMIT 5"
+            )
+            query_params = [
+                {"name": "lname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": last}},
+                {"name": "fname", "parameterType": {"type": "STRING"}, "parameterValue": {"value": first + "%"}},
+            ]
+        rows = run_bigquery(query, query_params)
+        results = parse_bq_results(rows)
+        return {"name": name, "count": len(results), "results": results, "bq_ok": True}
+    except Exception as e:
+        return {"name": name, "bq_ok": False, "error": str(e)}
 
-    const sortedNyt = (nytData.results||[]).slice().sort((a,b) => {
-      const ao = CONF_ORDER[a.confidence]!==undefined?CONF_ORDER[a.confidence]:9;
-      const bo = CONF_ORDER[b.confidence]!==undefined?CONF_ORDER[b.confidence]:9;
-      return ao-bo;
-    });
+@app.post("/auth/register", response_model=Token)
+async def register(user: UserCreate):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE email = %s", (user.email,))
+        if c.fetchone():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        password_hash = hash_password(user.password)
+        c.execute(
+            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+            (user.email, password_hash))
+        user_id = c.fetchone()[0]
+        conn.commit()
+        access_token = create_access_token(data={"sub": user_id})
+        return {"access_token": access_token, "token_type": "bearer"}
 
-    const scoredSsdi = (ssdiData.results||[]).map(r =>
-      Object.assign({}, r, { _score: scoreResult(r, firstName, nw.middle, lastName, nw.birthYear, nw.suffix) })
-    ).sort((a,b) => b._score - a._score);
+@app.post("/auth/login", response_model=Token)
+async def login(user: UserLogin):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, password_hash FROM users WHERE email = %s", (user.email,))
+        result = c.fetchone()
+        if not result or not verify_password(user.password, result[1]):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        access_token = create_access_token(data={"sub": result[0]})
+        return {"access_token": access_token, "token_type": "bearer"}
 
-    if (scoredSsdi.length === 1) scoredSsdi[0]._score = 95;
+@app.delete("/account")
+async def delete_account(user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM notifications WHERE user_id = %s", (user_id,))
+        c.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
+        c.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+        return {"message": "Account permanently deleted"}
 
-    setNytResults(sortedNyt);
-    setSsdiResults(scoredSsdi);
-    setSsdiHasMore(ssdiData.has_more||false);
-    setSsdiOffset(scoredSsdi.length);
-    setStatusMsg('');
-    setDebugRaw({
-      nyt:  { url:NYT_BASE+'/nyt/search?'+nytParams.toString(),  results:sortedNyt.length },
-      ssdi: { url:SSDI_BASE+'/ssdi/proxy?'+ssdiParams.toString(), results:scoredSsdi.length, has_more:ssdiData.has_more }
-    });
-    setSearching(false);
-    setSearched(true);
-  };
+@app.get("/watchlist", response_model=List[WatchlistResponse])
+async def get_watchlist(user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, location, dob, status, created_at,
+                   is_deceased, wikipedia_description, death_year
+            FROM watchlist
+            WHERE user_id = %s AND status = 'active'
+            ORDER BY created_at DESC
+        """, (user_id,))
+        items = []
+        for row in c.fetchall():
+            items.append({
+                "id": row[0], "name": row[1], "location": row[2],
+                "dob": row[3], "status": row[4], "created_at": str(row[5]),
+                "is_deceased": row[6] or False,
+                "wikipedia_description": row[7],
+                "death_year": row[8]
+            })
+        return items
 
-  const loadMoreSsdi = async () => {
-    const name = (nw.name||'').trim();
-    if (!name) return;
-    setSsdiLoading(true);
-    const nameParts = name.split(/\s+/);
-    const firstName = nameParts[0]||'';
-    const lastName  = nameParts.slice(1).join(' ')||'';
-    const ssdiName  = firstName===lastName ? firstName : (firstName+' '+lastName).trim();
-    try {
-      const r = await fetch(SSDI_BASE+'/ssdi/proxy?name='+encodeURIComponent(ssdiName)+'&offset='+ssdiOffset);
-      if (r.ok) {
-        const data = await r.json();
-        const newScored = (data.results||[]).map(rec =>
-          Object.assign({}, rec, { _score: scoreResult(rec, firstName, nw.middle, lastName, nw.birthYear, nw.suffix) })
-        );
-        const combined = ssdiResults.concat(newScored);
-        setSsdiResults(combined);
-        setSsdiHasMore(data.has_more||false);
-        setSsdiOffset(combined.length);
-      }
-    } catch(e) { console.log('loadMoreSsdi:', e); }
-    setSsdiLoading(false);
-  };
+@app.post("/watchlist")
+async def add_to_watchlist(item: WatchlistItem, user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO watchlist (user_id, name, location, dob, is_deceased, death_year)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        """, (user_id, item.name, item.location, item.dob,
+                item.is_deceased or False, item.death_year or None))
+        conn.commit()
+        item_id = c.fetchone()[0]
+        return {"message": "Added to watchlist", "id": item_id}
 
-  const handleKey  = (e) => { if (e.key==='Enter') doSearch(); };
-  const full       = buildFullName();
-  const onWatchlist = checkWatchlist(full);
-  const inMemories  = checkMemories(full);
-  const hasAnyResults = nytResults.length > 0 || ssdiResults.length > 0;
+@app.delete("/watchlist/{item_id}")
+async def remove_from_watchlist(item_id: int, user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE watchlist SET status = 'deleted' WHERE id = %s AND user_id = %s",
+            (item_id, user_id))
+        conn.commit()
+        if c.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Item not found")
+        return {"message": "Removed from watchlist"}
 
-  const watchlistStrip = () => {
-    if (inMemories)  return <p className="text-yellow-400 text-base font-bold text-center py-2">"{full}" is saved in Memories</p>;
-    if (onWatchlist) return <p className="text-green-400 text-base font-bold text-center py-2">"{full}" is on your Watchlist</p>;
-    return (
-      <button onClick={() => onAddWatchlist(full)}
-        className="w-full py-3 bg-yellow-700/30 border border-yellow-600/40 text-yellow-300 rounded-xl font-bold text-base flex items-center justify-center gap-2">
-        <PlusIcon /> Add "{full}" to Watchlist
-      </button>
-    );
-  };
+@app.get("/watchlist/{item_id}/refresh")
+async def refresh_watchlist_item(item_id: int, user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT w.id, w.name, w.is_deceased, u.email
+            FROM watchlist w
+            JOIN users u ON w.user_id = u.id
+            WHERE w.id = %s AND w.user_id = %s AND w.status = 'active'
+        """, (item_id, user_id))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Watchlist item not found")
+        watch_id, watch_name, was_deceased, user_email = row
 
-  return (
-    <>
-      <SsdiRecordDrawer
-        record={ssdiDrawer} onClose={() => setSsdiDrawer(null)}
-        onAddWatchlist={(name) => { onAddWatchlist(name); setSsdiDrawer(null); }}
-        onSaveMemory={(r) => { onSaveMemory(r); setSsdiDrawer(null); }}
-        checkWatchlist={checkWatchlist} checkMemories={checkMemories}
-      />
-      <RecordDrawer
-        record={articleDrawer} onClose={() => setArticleDrawer(null)}
-        onSave={(r) => onSaveMemory(r)}
-        alreadySaved={articleDrawer ? checkMemories(articleDrawer.url||articleDrawer.headline||'') : false}
-      />
-      <div className="space-y-3 w-full px-3" style={{ paddingTop:'1rem' }}>
-        <div className={cardClass}>
-          <div className="mb-2 pb-2 border-b border-yellow-900/30 text-center">
-            <p className="text-yellow-300 text-2xl font-bold italic whitespace-nowrap">Whatever happened to...</p>
-            <p className="text-gray-300 text-base mt-0.5">Search NY Times &amp; SSDI records</p>
-          </div>
+        if was_deceased:
+            c.execute("SELECT wikipedia_description, death_year FROM watchlist WHERE id = %s", (watch_id,))
+            stored = c.fetchone()
+            if stored and stored[0]:
+                stored_thumbnail = None
+                stored_birth = None
+                stored_death_full = stored[1]
+                try:
+                    sum_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(watch_name)
+                    sum_req = urllib.request.Request(sum_url, headers={"User-Agent": "MemoryWatch/1.0"})
+                    with urllib.request.urlopen(sum_req, timeout=10) as sum_resp:
+                        sum_data = json_lib.loads(sum_resp.read().decode())
+                    thumb = sum_data.get("thumbnail")
+                    stored_thumbnail = thumb.get("source") if thumb else None
+                    stored_birth = sum_data.get("birth_date")
+                    if sum_data.get("death_date"):
+                        stored_death_full = sum_data.get("death_date")
+                except Exception as e:
+                    print("[refresh] Summary fetch error for " + watch_name + ": " + str(e))
+                return {
+                    "id": watch_id, "name": watch_name, "is_deceased": True,
+                    "wikipedia_description": stored[0], "death_year": stored_death_full,
+                    "death_date": stored_death_full, "description": "",
+                    "thumbnail": stored_thumbnail, "birth_date": stored_birth,
+                    "newly_deceased": False, "legacy_results": []
+                }
 
-          {!searched ? (
-            <div className="space-y-3">
-              <div className="relative">
-                <input type="text" placeholder="First and Last Name *" value={nw.name}
-                  onChange={e => setNw(p => Object.assign({},p,{name:e.target.value}))} onKeyPress={handleKey}
-                  className={iClass+' pr-10'} autoCorrect="off" autoCapitalize="words" autoComplete="new-password" spellCheck="false"/>
-                {nw.name && <button onClick={() => setNw(p => Object.assign({},p,{name:''}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xl font-bold" type="button">×</button>}
-              </div>
-              <div className="relative">
-                <input type="text" placeholder="Middle Name or Initial — Helpful" value={nw.middle}
-                  onChange={e => setNw(p => Object.assign({},p,{middle:e.target.value}))} onKeyPress={handleKey}
-                  className={iClass+' pr-10'} autoCorrect="off" autoComplete="new-password" spellCheck="false"/>
-                {nw.middle && <button onClick={() => setNw(p => Object.assign({},p,{middle:''}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xl font-bold" type="button">×</button>}
-              </div>
-              <SuffixSelect value={nw.suffix} onChange={e => setNw(p => Object.assign({},p,{suffix:e.target.value}))} />
-              <div className="relative">
-                <input type="tel" placeholder="Birth Year — Helpful" value={nw.birthYear}
-                  onChange={e => setNw(p => Object.assign({},p,{birthYear:e.target.value.replace(/\D/g,'').slice(0,4)}))} onKeyPress={handleKey}
-                  className={iClass+' pr-10'} maxLength={4} autoComplete="new-password"/>
-                {nw.birthYear && <button onClick={() => setNw(p => Object.assign({},p,{birthYear:''}))} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xl font-bold" type="button">×</button>}
-              </div>
-              <button onClick={doSearch} disabled={searching}
-                className="w-full py-4 bg-yellow-600 hover:bg-yellow-700 text-black rounded-xl font-bold text-xl flex items-center justify-center gap-2 disabled:opacity-50">
-                <SearchIcon /> {searching ? (statusMsg||'Searching…') : 'Search'}
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {nytResults.length > 0 && (
-                <>
-                  <p className="text-yellow-400/80 text-sm font-bold">NY Times — {nytResults.length} result(s)</p>
-                  {nytResults.map((r,i) => (
-                    <div key={i} onClick={() => setArticleDrawer(r)}
-                      className="bg-black/50 border border-yellow-900/25 border-l-4 border-l-yellow-600 rounded-xl p-4 cursor-pointer hover:bg-black/70 transition-colors backdrop-blur-sm">
-                      <ConfBadge conf={r.confidence||'Related'} />
-                      <h3 className="text-white text-lg font-semibold leading-snug mb-1">{r.headline}</h3>
-                      <p className="text-gray-400 text-sm mb-1">{r.pub_date}&nbsp;·&nbsp;{r.byline||'NY Times'}&nbsp;·&nbsp;{r.section_name||''}</p>
-                      {(r.snippet||r.body_text) && <p className="text-gray-300 text-base leading-relaxed">{r.snippet||r.body_text}</p>}
-                    </div>
-                  ))}
-                </>
-              )}
+        wiki_ok = False
+        extract = ""
+        description = ""
+        death_date = None
+        thumbnail = None
+        birth_date = None
+        is_deceased = False
+        wiki_data = {}
 
-              {ssdiResults.length > 0 && (
-                <>
-                  <p className="text-yellow-400/80 text-sm font-bold mt-2">SSDI Records</p>
-                  <SsdiResultsBlock
-                    results={ssdiResults}
-                    searchFirst={(nw.name||'').split(/\s+/)[0]||''}
-                    searchMiddle={nw.middle}
-                    searchLast={(nw.name||'').split(/\s+/).slice(-1)[0]||''}
-                    searchBirthYear={nw.birthYear}
-                    searchSuffix={nw.suffix}
-                    hasMore={ssdiHasMore} onLoadMore={loadMoreSsdi}
-                    loadingMore={ssdiLoading} onSelect={(r) => setSsdiDrawer(r)}
-                    ssdiPage={ssdiPage} setSsdiPage={setSsdiPage}
-                  />
-                </>
-              )}
+        try:
+            normalized_watch_name = normalize_name_for_wiki(watch_name)
+            wiki_data = fetch_wiki_data_smart(normalized_watch_name)
+            extract = wiki_data.get("extract", "")
+            description = wiki_data.get("description", "")
+            death_date = extract_full_death_date(wiki_data)
+            if wiki_data.get("thumbnail"):
+                thumbnail = wiki_data["thumbnail"].get("source")
+            birth_date = wiki_data.get("birth_date", None)
+            is_deceased = is_deceased_from_wiki(wiki_data)
+            wiki_ok = True
+        except Exception as e:
+            print("[refresh] Wikipedia fetch failed for " + watch_name + ": " + str(e))
+            is_deceased = was_deceased or False
 
-              {!hasAnyResults && (
-                <div className="rounded-2xl overflow-hidden border border-yellow-800/40">
-                  <div className="px-4 py-2 bg-gray-800">
-                    <span className="text-white font-black tracking-widest text-base">Name Not Found</span>
-                  </div>
-                  <div className="bg-gray-900/70 p-4 space-y-3">
-                    <p className="text-white text-xl font-bold">{full}</p>
-                    <p className="text-gray-300 text-lg leading-relaxed">No records found. Try adding a middle initial, suffix, or birth year and search again.</p>
-                    {onWatchlist
-                      ? <p className="text-green-400 text-base font-bold text-center">Already on your Watchlist</p>
-                      : inMemories
-                        ? <p className="text-yellow-400 text-base font-bold text-center">Already saved in Memories</p>
-                        : <>
-                            <button onClick={() => { onAddWatchlist(full); setPage('watchlist'); }}
-                              className="w-full py-4 bg-yellow-600 hover:bg-yellow-700 text-black rounded-xl font-bold text-xl flex items-center justify-center gap-2">
-                              <PlusIcon /> Add "{full}" to Watchlist
-                            </button>
-                            <button onClick={() => { onSaveMemory({ _type:'memory_entry', saveTitle:full, name:full, headline:full, pub_date:'', byline:'', url:'', is_deceased:false, added:new Date().toLocaleDateString() }); setPage('memories'); }}
-                              className="w-full py-3 bg-gray-700/60 border border-gray-500/40 text-gray-200 rounded-xl text-lg flex items-center justify-center gap-2">
-                              <PlusIcon /> Save to Memories instead
-                            </button>
-                          </>
-                    }
-                  </div>
-                </div>
-              )}
+        legacy_results = search_legacy_oneoff(watch_name)
+        if legacy_results and not is_deceased:
+            is_deceased = True
 
-              {hasAnyResults && <div className="pt-1">{watchlistStrip()}</div>}
+        if wiki_ok or legacy_results:
+            c.execute("""
+                UPDATE watchlist
+                SET is_deceased = %s,
+                    wikipedia_description = %s,
+                    death_year = %s,
+                    wiki_last_checked = %s
+                WHERE id = %s
+            """, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
+            conn.commit()
 
-              <div className="flex gap-2">
-                <button onClick={() => { setSearched(false); setNytResults([]); setSsdiResults([]); setDebugRaw(null); setDebugOpen(false); setStatusMsg(''); }}
-                  className="flex-1 py-2.5 bg-white/10 border border-white/20 text-white/70 rounded-xl text-base flex items-center justify-center gap-1">
-                  <EditIcon /> Edit Name
-                </button>
-                <button onClick={clearSearch} className="flex-1 py-2.5 bg-white/10 border border-white/20 text-white/70 rounded-xl text-base text-center">New Search</button>
-              </div>
+        if is_deceased:
+            c.execute(
+                "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
+                (watch_id, "%Wikipedia%"))
+            if not c.fetchone():
+                death_info = (" Died: " + str(death_date)) if death_date else ""
+                message = "Wikipedia reports " + watch_name + " has passed away." + death_info
+                c.execute("""
+                    INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
+                    VALUES (%s, %s, 1, %s, %s)
+                """, (user_id, watch_id, message, False))
+                conn.commit()
+                if user_email:
+                    wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
+                    sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
+                    if sent:
+                        c.execute(
+                            "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s",
+                            (watch_id, "%Wikipedia%"))
+                        conn.commit()
 
-              {debugRaw && (
-                <div>
-                  <button onClick={() => setDebugOpen(!debugOpen)}
-                    className="w-full flex justify-between items-center px-3 py-2 bg-black/40 border border-white/8 text-white/30 rounded-t-lg text-xs uppercase tracking-widest">
-                    <span>{debugOpen?'▼':'▶'} Raw API Response</span>
-                    <span>{debugOpen?'HIDE':'SHOW'}</span>
-                  </button>
-                  {debugOpen && (
-                    <pre className="bg-black/90 border border-white/8 border-t-0 rounded-b-lg p-3 text-xs text-green-400 overflow-auto max-h-56 whitespace-pre-wrap break-all">
-                      {JSON.stringify(debugRaw,null,2)}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-};
+        if isinstance(thumbnail, dict):
+            thumbnail = thumbnail.get("source")
 
-const WatchlistPage = ({ watchlist, onRemove, onCopyToMemories, checkMemories }) => {
-  const [drawer, setDrawer] = useState(null);
-  return (
-    <>
-      <RecordDrawer record={drawer} onClose={() => setDrawer(null)}
-        onSave={(r) => onCopyToMemories(r)}
-        alreadySaved={drawer ? checkMemories(drawer.name||'') : false} />
-      <div className="space-y-3 w-full px-3" style={{ paddingTop:'1rem' }}>
-        <div className={cardClass}>
-          <div className="mb-2 pb-2 border-b border-yellow-900/30 text-center">
-            <h2 className="text-3xl font-black text-white tracking-wide">Watchlist</h2>
-            <p className="text-gray-300 text-base mt-1">Tap a name to view — we'll notify you when they pass</p>
-          </div>
-          {watchlist.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-gray-300 text-base leading-relaxed mb-2">No one on your watchlist yet.</p>
-              <p className="text-yellow-400 text-base font-medium">Use Search to find and add people.</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xl font-bold text-white text-center mb-1">Your Watchlist ({watchlist.length})</p>
-              {watchlist.map((w,i) => (
-                <div key={i} className="p-4 rounded-xl border bg-gray-800/50 border-yellow-900/20 flex items-center justify-between">
-                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setDrawer(Object.assign({},w,{_type:'watchlist_entry'}))}>
-                    <p className="font-semibold text-xl text-white underline decoration-dotted truncate">{w.name}</p>
-                    <div className="flex items-center gap-1 mt-1"><CheckIcon /><span className="text-base text-green-400">Following</span></div>
-                    <p className="text-gray-500 text-xs mt-0.5">Added {w.added}</p>
-                  </div>
-                  <div className="flex gap-2 ml-2 shrink-0">
-                    <button onClick={() => onCopyToMemories(w)}
-                      className="px-3 py-1.5 bg-gray-700/60 border border-gray-500/40 text-gray-200 rounded-lg text-sm font-bold whitespace-nowrap">
-                      + Memories
-                    </button>
-                    <button onClick={() => onRemove(w.name)} className="p-2 text-red-500 hover:bg-red-900/30 rounded-lg"><TrashIcon /></button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-};
+        return {
+            "id": watch_id,
+            "name": watch_name,
+            "is_deceased": is_deceased,
+            "wikipedia_description": extract,
+            "death_year": death_date,
+            "death_date": death_date,
+            "description": description,
+            "thumbnail": thumbnail,
+            "birth_date": birth_date,
+            "newly_deceased": is_deceased and not was_deceased,
+            "legacy_results": legacy_results
+        }
 
-const MemoriesPage = ({ memories, onDelete }) => {
-  const [drawer, setDrawer] = useState(null);
-  return (
-    <>
-      <RecordDrawer record={drawer} onClose={() => setDrawer(null)} onSave={() => {}} alreadySaved={true} isMemoryView={true} />
-      <div className="space-y-3 w-full px-3" style={{ paddingTop:'1rem' }}>
-        <div className={cardClass}>
-          <div className="mb-2 pb-2 border-b border-yellow-900/30 text-center">
-            <h2 className="text-3xl font-black text-white tracking-wide">Memories</h2>
-            <p className="text-gray-300 text-base mt-1">People you have found who have passed</p>
-          </div>
-          {memories.length === 0 ? (
-            <div className="text-center py-6">
-              <p className="text-gray-300 text-lg leading-relaxed">Save obituaries here for future reference by tapping Save to Memories in any result.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-xl font-bold text-white text-center mb-1">Saved Memories ({memories.length})</p>
-              {memories.map((m,i) => {
-                const isDeceased  = !!(m.dod||m.death_year||m.is_deceased||m.pub_date);
-                const displayName = m.saveTitle||m.name||m.headline||'';
-                const dodDisplay  = m.dod||m.death_year||(m.pub_date?m.pub_date.slice(0,4):null);
-                const statusText  = isDeceased?('Passed Away'+(dodDisplay?' — '+dodDisplay:'')):'Saved';
-                return (
-                  <div key={i} className="p-4 bg-gray-900/70 rounded-xl border border-gray-600/50 flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <h3 className={'font-semibold text-xl truncate '+(isDeceased?'text-gray-300 line-through':'text-white')}>{displayName}</h3>
-                      <span className="text-base text-gray-400 font-bold">{statusText}</span>
-                    </div>
-                    <div className="flex gap-2 ml-2 shrink-0">
-                      <button onClick={() => setDrawer(Object.assign({},m,{_type:'memory_entry',name:displayName}))}
-                        className="px-3 py-1.5 bg-yellow-700/40 border border-yellow-600/40 text-white rounded-lg text-sm font-bold">View</button>
-                      <button onClick={() => onDelete(i)} className="p-2 text-red-500 hover:bg-red-900/30 rounded-lg"><TrashIcon /></button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-};
+@app.delete("/notifications/{notif_id}")
+async def delete_notification(notif_id: int, user_id: int = Depends(get_current_user)):
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM notifications WHERE id = %s AND user_id = %s", (notif_id, user_id))
+            conn.commit()
+            return {"deleted": True}
+    except Exception as e:
+        print("Delete notification error: " + str(e))
+        return {"deleted": False}
 
-function App() {
-  const [page,       setPage]       = useState('search');
-  const [apiVersion, setApiVersion] = useState('—');
-  const [watchlist,  setWatchlist]  = useState(() => JSON.parse(localStorage.getItem('nyt_watchlist')||'[]'));
-  const [memories,   setMemories]   = useState(() => JSON.parse(localStorage.getItem('nyt_memories') ||'[]'));
+@app.get("/ssdi/search")
+async def ssdi_search(
+    name: str,
+    birth_year: str = None,
+    middle_name: str = None,
+    suffix: str = None,
+    offset: int = 0,
+    user_id: int = Depends(get_current_user)
+):
+    """Authenticated SSDI search — for DORA and MW apps."""
+    return run_ssdi_query(name, birth_year, middle_name, suffix, offset)
 
-  useEffect(() => {
-    fetch(NYT_BASE+'/')
-      .then(r => r.json())
-      .then(d => { if (d.version) setApiVersion(d.version); })
-      .catch(() => {});
-  }, []);
+@app.get("/ssdi/proxy")
+async def ssdi_proxy(
+    name: str,
+    birth_year: str = None,
+    middle_name: str = None,
+    suffix: str = None,
+    offset: int = 0
+):
+    """Unauthenticated SSDI proxy — for NYT tester and future verticals."""
+    return run_ssdi_query(name, birth_year, middle_name, suffix, offset)
 
-  const saveWatchlist = (list) => { setWatchlist(list); localStorage.setItem('nyt_watchlist',JSON.stringify(list)); };
-  const saveMemories  = (list) => { setMemories(list);  localStorage.setItem('nyt_memories', JSON.stringify(list)); };
+@app.get("/legacy/search")
+async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
+    return {"name": name, "results": [], "count": 0}
 
-  const checkWatchlist = (name) => {
-    if (!name) return false;
-    return watchlist.some(w => normName(w.name) === normName(name));
-  };
+@app.post("/search", response_model=List[ObituaryResult])
+async def search_obituaries(search: ObituarySearch):
+    with get_db() as conn:
+        c = conn.cursor()
+        results = []
+        name = search.name.strip()
+        if not name:
+            return results
+        search_normalized = normalize_name(name)
+        query = """SELECT id, name, name_normalized, age, location, date, source, link, obit_text
+                   FROM obituaries WHERE name ILIKE %s OR name_normalized ILIKE %s"""
+        params = ["%" + name + "%", "%" + search_normalized + "%"]
+        if search.birth_year:
+            query += " AND date LIKE %s"
+            params.append("%" + search.birth_year + "%")
+        query += " ORDER BY scraped_at DESC LIMIT 20"
+        c.execute(query, params)
+        for row in c.fetchall():
+            try:
+                confidence = calculate_confidence(name, row[1] or "", search.location, row[4])
+                results.append({
+                    "id": row[0], "name": row[1] or "",
+                    "age": row[3], "location": row[4], "date": row[5],
+                    "source": "Legacy", "link": row[7],
+                    "obit_text": row[8] if len(row) > 8 else None,
+                    "confidence": confidence
+                })
+            except Exception as e:
+                print("Error processing search result: " + str(e))
+                continue
+        return results
 
-  const checkMemories = (key) => {
-    if (!key) return false;
-    const k = normName(key);
-    return memories.some(m =>
-      normName(m.url||'')===k || normName(m.saveTitle||'')===k ||
-      normName(m.name||'')===k || normName(m.headline||'')===k
-    );
-  };
+@app.get("/notifications")
+async def get_notifications(user_id: int = Depends(get_current_user)):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT n.id, n.message, n.created_at, w.name,
+                   COALESCE(o.link, '') as link, n.watchlist_id
+            FROM notifications n
+            JOIN watchlist w ON n.watchlist_id = w.id
+            LEFT JOIN obituaries o ON n.obituary_id = o.id
+            WHERE n.user_id = %s
+            ORDER BY n.created_at DESC LIMIT 50
+        """, (user_id,))
+        notifications = []
+        for row in c.fetchall():
+            notifications.append({
+                "id": row[0], "name": row[3],
+                "message": row[1], "created_at": str(row[2]),
+                "link": row[4] or "",
+                "watchlist_id": row[5]
+            })
+        return notifications
 
-  const addToWatchlist = (name) => {
-    if (checkWatchlist(name)) return;
-    saveWatchlist(watchlist.concat([{ name, added:new Date().toLocaleDateString() }]));
-  };
+def check_wikipedia_watchlist():
+    print("[" + str(datetime.now()) + "] Starting Wikipedia watchlist check...")
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT w.id, w.user_id, w.name, u.email, w.is_deceased
+            FROM watchlist w
+            JOIN users u ON w.user_id = u.id
+            WHERE w.status = 'active'
+            AND (w.is_deceased = FALSE OR w.is_deceased IS NULL)
+        """)
+        watchlist_items = c.fetchall()
+        updated = 0
+        notified = 0
+        for watch in watchlist_items:
+            watch_id, user_id, watch_name, user_email, was_deceased = watch
+            try:
+                normalized_name = normalize_name_for_wiki(watch_name)
+                data = fetch_wiki_data_smart(normalized_name)
+                if data.get("type") == "disambiguation":
+                    continue
+                extract = data.get("extract", "")
+                death_date = extract_full_death_date(data)
+                is_deceased = is_deceased_from_wiki(data)
+                c.execute("""
+                    UPDATE watchlist
+                    SET is_deceased = %s,
+                        wikipedia_description = %s,
+                        death_year = %s,
+                        wiki_last_checked = %s
+                    WHERE id = %s
+                """, (is_deceased, extract[:2000] if extract else None, death_date, datetime.utcnow(), watch_id))
+                conn.commit()
+                updated += 1
+                if is_deceased:
+                    c.execute(
+                        "SELECT id FROM notifications WHERE watchlist_id = %s AND message LIKE %s",
+                        (watch_id, "%Wikipedia%"))
+                    if not c.fetchone():
+                        death_info = (" Died: " + str(death_date)) if death_date else ""
+                        message = "Wikipedia reports " + watch_name + " has passed away." + death_info
+                        c.execute("""
+                            INSERT INTO notifications (user_id, watchlist_id, obituary_id, message, email_sent)
+                            VALUES (%s, %s, 1, %s, %s)
+                        """, (user_id, watch_id, message, False))
+                        conn.commit()
+                        notified += 1
+                        if user_email:
+                            wiki_link = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(watch_name)
+                            sent = send_email_notification(user_email, watch_name, watch_name, None, wiki_link)
+                            if sent:
+                                c.execute(
+                                    "UPDATE notifications SET email_sent = TRUE WHERE watchlist_id = %s AND message LIKE %s",
+                                    (watch_id, "%Wikipedia%"))
+                                conn.commit()
+                time.sleep(0.5)
+            except Exception as e:
+                print("Wiki check error for " + watch_name + ": " + str(e))
+                continue
+    print("[" + str(datetime.now()) + "] Wikipedia check complete. " + str(updated) + " updated, " + str(notified) + " notified.")
 
-  const saveToMemory = (r) => {
-    const key = r.url||r.saveTitle||r.name||r.headline||'';
-    if (checkMemories(key)) return;
-    saveMemories(memories.concat([r]));
-  };
+def run_scheduler():
+    schedule.every(6).hours.do(check_wikipedia_watchlist)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
 
-  const copyWatchlistToMemories = (w) => {
-    saveToMemory(Object.assign({},w,{
-      _type:'memory_entry', saveTitle:w.name, name:w.name,
-      headline:w.name, pub_date:'', byline:'', url:'',
-      is_deceased:false, added:new Date().toLocaleDateString()
-    }));
-  };
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    print("Database initialized")
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    print("Background scheduler started (wiki-check: 6hr, scraping: suspended)")
+    threading.Thread(target=check_wikipedia_watchlist, daemon=True).start()
+    print("Initial Wikipedia watchlist check started")
 
-  return (
-    <PageWrapper dark={page!=='search'}>
-      <Header apiVersion={apiVersion} />
-      {page==='search' && (
-        <SearchPage
-          onAddWatchlist={addToWatchlist} onSaveMemory={saveToMemory}
-          checkWatchlist={checkWatchlist} checkMemories={checkMemories}
-          setApiVersion={setApiVersion} setPage={setPage}
-        />
-      )}
-      {page==='watchlist' && (
-        <WatchlistPage
-          watchlist={watchlist}
-          onRemove={(name) => saveWatchlist(watchlist.filter(w => w.name!==name))}
-          onCopyToMemories={copyWatchlistToMemories}
-          checkMemories={checkMemories}
-        />
-      )}
-      {page==='memories' && (
-        <MemoriesPage
-          memories={memories}
-          onDelete={(i) => saveMemories(memories.filter((_,j) => j!==i))}
-        />
-      )}
-      <BottomNav
-        page={page} setPage={setPage}
-        watchlistCount={watchlist.length} memoriesCount={memories.length}
-        apiVersion={apiVersion}
-      />
-    </PageWrapper>
-  );
-}
-
-ReactDOM.render(React.createElement(App), document.getElementById('root'));
-</script>
-</body>
-</html>
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
