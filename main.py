@@ -666,7 +666,22 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "version": "1.5.20"
     }
-
+    
+@app.get("/admin/delete-user")
+async def admin_delete_user(email: str):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE email = %s", (email,))
+        user = c.fetchone()
+        if not user:
+            return {"deleted": False, "error": "User not found"}
+        user_id = user[0]
+        c.execute("DELETE FROM notifications WHERE user_id = %s", (user_id,))
+        c.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
+        c.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+        return {"deleted": True, "email": email}
+        
 @app.get("/admin/stats")
 async def get_stats():
     with get_db() as conn:
