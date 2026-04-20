@@ -245,8 +245,10 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         first = (first_name or "").strip().upper()
         mid = (middle_name or "").strip().upper().rstrip(".")
 
-        # SoQL $where — strip spaces from last name for 'Mc Cune' vs 'McCune'
-        last_stripped = last.replace(" ", "")
+        # SoQL $where — exact match on upper-cased last name.
+        # Note: Socrata's replace() is unreliable on legacy /resource/ endpoint,
+        # so we don't try to strip spaces server-side. Names like "Mc Cune" must
+        # be searched with the space. (Queued as a circle-back item.)
         where_clauses = [
             "upper(d_last_name) = '" + last.replace("'", "''") + "'"
         ]
@@ -267,8 +269,20 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
             "User-Agent": "MemoryWatch-NGL/1.0",
             "Accept": "application/json"
         })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = json_lib.loads(resp.read().decode())
+        # Fetch with one retry on timeout (VA API / Render cold start can be slow)
+        raw = None
+        last_err = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    raw = json_lib.loads(resp.read().decode())
+                break
+            except Exception as e:
+                last_err = e
+                print("[ngl] attempt " + str(attempt + 1) + " failed: " + str(e))
+                continue
+        if raw is None:
+            raise last_err if last_err else Exception("NGL fetch failed")
 
         # Fuzzy-score candidates on first name
         scored = []
@@ -764,7 +778,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.21")
+app = FastAPI(title="Memory Watch API", version="1.5.22")
 
 app.add_middleware(
     CORSMiddleware,
@@ -831,7 +845,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.21"
+        "version": "1.5.22"
     }
     
 @app.get("/admin/delete-user")
