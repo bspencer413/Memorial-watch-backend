@@ -252,6 +252,15 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         where_clauses = [
             "upper(d_last_name) = '" + last.replace("'", "''") + "'"
         ]
+        # First-name prefix filter: narrows 50-row page to actual candidates.
+        # Use first 3 chars as prefix for typo tolerance — 'NORMAN' and 'NORMAL'
+        # both start with 'NOR', so fuzzy scoring still catches the typo after
+        # this prefilter. Short names (<3 chars) use the full name.
+        if first:
+            fprefix = first[:3] if len(first) >= 3 else first
+            where_clauses.append(
+                "upper(d_first_name) like '" + fprefix.replace("'", "''") + "%'"
+            )
         if birth_year and birth_year.strip():
             yr = birth_year.strip()
             where_clauses.append("d_birth_date like '%/" + yr.replace("'", "''") + "'")
@@ -778,7 +787,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.22")
+app = FastAPI(title="Memory Watch API", version="1.5.23")
 
 app.add_middleware(
     CORSMiddleware,
@@ -845,7 +854,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.22"
+        "version": "1.5.23"
     }
     
 @app.get("/admin/delete-user")
