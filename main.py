@@ -248,7 +248,7 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         # SoQL $where — strip spaces from last name for 'Mc Cune' vs 'McCune'
         last_stripped = last.replace(" ", "")
         where_clauses = [
-            "upper(replace(d_last_name, ' ', '')) = '" + last_stripped.replace("'", "''") + "'"
+            "upper(d_last_name) = '" + last.replace("'", "''") + "'"
         ]
         if birth_year and birth_year.strip():
             yr = birth_year.strip()
