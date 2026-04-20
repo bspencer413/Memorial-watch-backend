@@ -13,6 +13,7 @@ import schedule
 import threading
 import time
 import re
+import difflib
 import httpx
 import urllib.request
 import urllib.parse
@@ -182,6 +183,172 @@ def run_ssdi_query(name: str, birth_year: str = None, middle_name: str = None,
     except Exception as e:
         print("[dmf] Search error for " + name + ": " + str(e))
         return {"name": name, "results": [], "count": 0, "has_more": False, "offset": offset}
+
+# ── VA Nationwide Gravesite Locator (NGL) via Socrata ──────────────────────────
+
+def clean_ngl_suffix(s):
+    """NGL suffix field has junk values like backticks/periods/apostrophes.
+    Only return real suffixes (contain letters, or valid Roman numerals)."""
+    if not s:
+        return ""
+    t = str(s).strip()
+    if not t:
+        return ""
+    if re.search(r"[a-zA-Z]", t):
+        if len(t) >= 2 or re.match(r"^[IVX]+$", t, re.IGNORECASE):
+            return t
+    return ""
+
+
+def clean_ngl_zip(z):
+    """NGL returns ZIPs as floats like '49012.0'. Strip the trailing .0."""
+    if z is None:
+        return ""
+    s = str(z).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
+def fuzzy_first_name_score(search_first: str, candidate_first: str) -> float:
+    """Return similarity 0.0-1.0 between two first names.
+    Catches transcription typos like Normal/Norman (~0.83)."""
+    if not search_first or not candidate_first:
+        return 0.0
+    a = search_first.strip().upper()
+    b = candidate_first.strip().upper()
+    if a == b:
+        return 1.0
+    if a.startswith(b) or b.startswith(a):
+        return 0.9
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def run_ngl_query(first_name: str = None, last_name: str = None,
+                  middle_name: str = None, birth_year: str = None,
+                  offset: int = 0) -> dict:
+    """Core NGL Socrata query — no auth, called by both endpoints.
+
+    Typo tolerance strategy:
+    - Last name: exact match on Socrata side, with spaces stripped ('Mc Cune' = 'McCune').
+    - First name: fetch candidates, then fuzzy-score in Python (difflib).
+      Accept matches with ratio >= 0.75.
+    """
+    try:
+        page_size = 10
+        fetch_size = 50  # pull extra so we can fuzzy-filter client-side
+
+        if not last_name or not last_name.strip():
+            return {"results": [], "count": 0, "has_more": False, "offset": offset}
+
+        last = last_name.strip().upper()
+        first = (first_name or "").strip().upper()
+        mid = (middle_name or "").strip().upper().rstrip(".")
+
+        # SoQL $where — strip spaces from last name for 'Mc Cune' vs 'McCune'
+        last_stripped = last.replace(" ", "")
+        where_clauses = [
+            "upper(replace(d_last_name, ' ', '')) = '" + last_stripped.replace("'", "''") + "'"
+        ]
+        if birth_year and birth_year.strip():
+            yr = birth_year.strip()
+            where_clauses.append("d_birth_date like '%/" + yr.replace("'", "''") + "'")
+
+        where = " AND ".join(where_clauses)
+        params = urllib.parse.urlencode({
+            "$where": where,
+            "$limit": str(fetch_size),
+            "$offset": str(offset),
+            "$order": "d_last_name, d_first_name"
+        })
+        url = "https://data.va.gov/resource/3u66-fxug.json?" + params
+
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "MemoryWatch-NGL/1.0",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json_lib.loads(resp.read().decode())
+
+        # Fuzzy-score candidates on first name
+        scored = []
+        for rec in raw:
+            cand_first = str(rec.get("d_first_name") or "").strip()
+            score = fuzzy_first_name_score(first, cand_first) if first else 0.5
+            # 0.75 catches Normal/Norman (~0.83) but rejects random matches
+            if not first or score >= 0.75:
+                if mid:
+                    cand_mid = str(rec.get("d_mid_name") or "").strip().upper().rstrip(".")
+                    if cand_mid and not (cand_mid.startswith(mid) or mid.startswith(cand_mid)):
+                        continue
+                scored.append((score, rec))
+
+        # Sort by score desc, then last name
+        scored.sort(key=lambda x: (-x[0], str(x[1].get("d_last_name") or "")))
+
+        has_more = len(scored) > page_size
+        scored = scored[:page_size]
+
+        results = []
+        for score, rec in scored:
+            d_first = str(rec.get("d_first_name") or "").strip()
+            d_mid = str(rec.get("d_mid_name") or "").strip()
+            d_last = str(rec.get("d_last_name") or "").strip()
+            d_suffix = clean_ngl_suffix(rec.get("d_suffix"))
+
+            full_name = d_first
+            if d_mid:
+                full_name += " " + d_mid
+            full_name += " " + d_last
+            if d_suffix:
+                full_name += " " + d_suffix
+
+            results.append({
+                "decedent_id": str(rec.get("decedent_id") or ""),
+                "name": full_name.strip(),
+                "first_name": d_first,
+                "middle_name": d_mid,
+                "last_name": d_last,
+                "suffix": d_suffix,
+                "birth_date": str(rec.get("d_birth_date") or ""),
+                "death_date": str(rec.get("d_death_date") or ""),
+                "relationship": str(rec.get("relationship") or ""),
+                "branch": str(rec.get("branch") or ""),
+                "rank": str(rec.get("rank") or ""),
+                "war": str(rec.get("war") or ""),
+                "cem_name": str(rec.get("cem_name") or ""),
+                "cem_addr_one": str(rec.get("cem_addr_one") or ""),
+                "cem_addr_two": str(rec.get("cem_addr_two") or ""),
+                "city": str(rec.get("city") or ""),
+                "state": str(rec.get("state") or ""),
+                "zip": clean_ngl_zip(rec.get("zip")),
+                "cem_url": str(rec.get("cem_url") or ""),
+                "cem_phone": str(rec.get("cem_phone") or ""),
+                "v_first_name": str(rec.get("v_first_name") or ""),
+                "v_mid_name": str(rec.get("v_mid_name") or ""),
+                "v_last_name": str(rec.get("v_last_name") or ""),
+                "v_suffix": clean_ngl_suffix(rec.get("v_suffix")),
+                "last_update_date": str(rec.get("last_update_date") or ""),
+                "_score": round(score, 2),
+                "source": "VA National Cemetery Administration"
+            })
+
+        print("[ngl] first=" + (first or "*") + " last=" + last +
+              " -> " + str(len(results)) + " results has_more=" + str(has_more))
+        return {
+            "first_name": first_name or "",
+            "last_name": last_name or "",
+            "results": results,
+            "count": len(results),
+            "has_more": has_more,
+            "offset": offset
+        }
+    except urllib.error.HTTPError as e:
+        print("[ngl] HTTP error: " + str(e.code) + " " + str(e))
+        return {"results": [], "count": 0, "has_more": False, "offset": offset, "error": "http_" + str(e.code)}
+    except Exception as e:
+        print("[ngl] Search error: " + str(e))
+        return {"results": [], "count": 0, "has_more": False, "offset": offset, "error": str(e)}
 
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -597,7 +764,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.20")
+app = FastAPI(title="Memory Watch API", version="1.5.21")
 
 app.add_middleware(
     CORSMiddleware,
@@ -664,7 +831,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.20"
+        "version": "1.5.21"
     }
     
 @app.get("/admin/delete-user")
@@ -755,6 +922,11 @@ async def test_ssdi(name: str):
         return {"name": name, "count": len(results), "results": results, "bq_ok": True}
     except Exception as e:
         return {"name": name, "bq_ok": False, "error": str(e)}
+
+@app.get("/admin/test-ngl/{last_name}")
+async def test_ngl(last_name: str, first_name: str = None):
+    """Quick NGL smoke test. e.g. /admin/test-ngl/Steele?first_name=Billy"""
+    return run_ngl_query(first_name=first_name, last_name=last_name)
 
 @app.post("/auth/register", response_model=Token)
 async def register(user: UserCreate):
@@ -993,6 +1165,29 @@ async def ssdi_proxy(
 ):
     """Unauthenticated SSDI proxy — for NYT tester and future verticals."""
     return run_ssdi_query(name, birth_year, middle_name, suffix, offset)
+
+@app.get("/ngl/search")
+async def ngl_search(
+    first_name: str = None,
+    last_name: str = None,
+    middle_name: str = None,
+    birth_year: str = None,
+    offset: int = 0,
+    user_id: int = Depends(get_current_user)
+):
+    """Authenticated NGL (VA Gravesite Locator) search — for DORA and MW apps."""
+    return run_ngl_query(first_name, last_name, middle_name, birth_year, offset)
+
+@app.get("/ngl/proxy")
+async def ngl_proxy(
+    first_name: str = None,
+    last_name: str = None,
+    middle_name: str = None,
+    birth_year: str = None,
+    offset: int = 0
+):
+    """Unauthenticated NGL proxy — for NGL tester and future verticals."""
+    return run_ngl_query(first_name, last_name, middle_name, birth_year, offset)
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
