@@ -293,21 +293,70 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         if raw is None:
             raise last_err if last_err else Exception("NGL fetch failed")
 
-        # Fuzzy-score candidates on first name
+        # Multi-factor scoring for ranking candidates.
+        # Base score from first-name match, then additive boosts for veteran
+        # status, middle-name match, birth-year match, suffix match.
+        # Caps at 1.0. Min threshold 0.75 to be included at all.
+        suffix_in = (middle_name or "").strip()  # placeholder; real suffix below
+        # (We accept suffix via the route, but the /admin/test-ngl route doesn't
+        #  pass it — only /ngl/search and /ngl/proxy do. Keep compatible.)
         scored = []
         for rec in raw:
             cand_first = str(rec.get("d_first_name") or "").strip()
-            score = fuzzy_first_name_score(first, cand_first) if first else 0.5
+            base_score = fuzzy_first_name_score(first, cand_first) if first else 0.5
             # 0.75 catches Normal/Norman (~0.83) but rejects random matches
-            if not first or score >= 0.75:
-                if mid:
-                    cand_mid = str(rec.get("d_mid_name") or "").strip().upper().rstrip(".")
-                    if cand_mid and not (cand_mid.startswith(mid) or mid.startswith(cand_mid)):
-                        continue
-                scored.append((score, rec))
+            if first and base_score < 0.75:
+                continue
 
-        # Sort by score desc, then last name
-        scored.sort(key=lambda x: (-x[0], str(x[1].get("d_last_name") or "")))
+            # Middle-name gate: if user provided a middle, record's middle must
+            # match (exact or prefix). Reject otherwise. Also compute boost.
+            mid_boost = 0.0
+            if mid:
+                cand_mid = str(rec.get("d_mid_name") or "").strip().upper().rstrip(".")
+                if not cand_mid:
+                    continue
+                if cand_mid == mid:
+                    mid_boost = 0.05
+                elif cand_mid.startswith(mid) or mid.startswith(cand_mid):
+                    mid_boost = 0.05
+                else:
+                    continue
+
+            # Veteran status boost — "Veteran (Self)" outranks spouse/child/etc.
+            rel = str(rec.get("relationship") or "").lower()
+            vet_boost = 0.10 if ("self" in rel or rel.strip() == "veteran") else 0.0
+
+            # Birth year boost — only if user provided one
+            byear_boost = 0.0
+            if birth_year and birth_year.strip():
+                cand_dob = str(rec.get("d_birth_date") or "")
+                if birth_year.strip() in cand_dob:
+                    byear_boost = 0.10
+
+            # Final score, capped at 1.0
+            score = min(1.0, base_score + vet_boost + mid_boost + byear_boost)
+            scored.append((score, rec))
+
+        # Sort by: score desc, then veteran status desc, then death date desc,
+        # then alphabetical last/first.
+        def sort_key(item):
+            s, r = item
+            rel = str(r.get("relationship") or "").lower()
+            is_vet = 1 if ("self" in rel or rel.strip() == "veteran") else 0
+            # Death date as a sortable string — VA stores M/D/YYYY, convert to YYYYMMDD-ish
+            dod = str(r.get("d_death_date") or "")
+            dod_key = ""
+            try:
+                if "/" in dod:
+                    parts = dod.split("/")
+                    if len(parts) == 3:
+                        dod_key = parts[2].zfill(4) + parts[0].zfill(2) + parts[1].zfill(2)
+            except Exception:
+                pass
+            return (-s, -is_vet, -int(dod_key or "0"),
+                    str(r.get("d_last_name") or ""),
+                    str(r.get("d_first_name") or ""))
+        scored.sort(key=sort_key)
 
         has_more = len(scored) > page_size
         scored = scored[:page_size]
@@ -787,7 +836,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.23")
+app = FastAPI(title="Memory Watch API", version="1.5.24")
 
 app.add_middleware(
     CORSMiddleware,
@@ -854,7 +903,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.23"
+        "version": "1.5.24"
     }
     
 @app.get("/admin/delete-user")
