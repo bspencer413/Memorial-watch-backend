@@ -35,7 +35,7 @@ DB_PASS = "9IkXRdY8NcZSKy0yw5b7viPdtIrVIITR"
 DB_NAME = "memorial_watch_db"
 DATABASE_URL = "postgresql://" + DB_USER + ":" + DB_PASS + "@" + DB_HOST + "/" + DB_NAME
 
-# ── Google BigQuery via google-cloud-bigquery library ──────────────────────────
+# -- Google BigQuery via google-cloud-bigquery library --------------------------
 
 def get_bq_client():
     """Create BigQuery client from service account JSON env var."""
@@ -114,11 +114,11 @@ def parse_bq_results(rows: list) -> list:
         })
     return results
 
-# ── Shared SSDI query logic (used by both /ssdi/search and /ssdi/proxy) ────────
+# -- Shared SSDI query logic (used by both /ssdi/search and /ssdi/proxy) --------
 
 def run_ssdi_query(name: str, birth_year: str = None, middle_name: str = None,
                    suffix: str = None, offset: int = 0) -> dict:
-    """Core SSDI BigQuery search — no auth, called by both endpoints."""
+    """Core SSDI BigQuery search -- no auth, called by both endpoints."""
     try:
         parts = name.strip().split()
         mid = (middle_name or "").strip().upper().rstrip(".")
@@ -184,7 +184,7 @@ def run_ssdi_query(name: str, birth_year: str = None, middle_name: str = None,
         print("[dmf] Search error for " + name + ": " + str(e))
         return {"name": name, "results": [], "count": 0, "has_more": False, "offset": offset}
 
-# ── VA Nationwide Gravesite Locator (NGL) via Socrata ──────────────────────────
+# -- VA Nationwide Gravesite Locator (NGL) via Socrata --------------------------
 
 def clean_ngl_suffix(s):
     """NGL suffix field has junk values like backticks/periods/apostrophes.
@@ -227,16 +227,10 @@ def fuzzy_first_name_score(search_first: str, candidate_first: str) -> float:
 def run_ngl_query(first_name: str = None, last_name: str = None,
                   middle_name: str = None, birth_year: str = None,
                   offset: int = 0) -> dict:
-    """Core NGL Socrata query — no auth, called by both endpoints.
-
-    Typo tolerance strategy:
-    - Last name: exact match on Socrata side, with spaces stripped ('Mc Cune' = 'McCune').
-    - First name: fetch candidates, then fuzzy-score in Python (difflib).
-      Accept matches with ratio >= 0.75.
-    """
+    """Core NGL Socrata query -- no auth, called by both endpoints."""
     try:
         page_size = 10
-        fetch_size = 50  # pull extra so we can fuzzy-filter client-side
+        fetch_size = 50
 
         if not last_name or not last_name.strip():
             return {"results": [], "count": 0, "has_more": False, "offset": offset}
@@ -245,17 +239,9 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         first = (first_name or "").strip().upper()
         mid = (middle_name or "").strip().upper().rstrip(".")
 
-        # SoQL $where — exact match on upper-cased last name.
-        # Note: Socrata's replace() is unreliable on legacy /resource/ endpoint,
-        # so we don't try to strip spaces server-side. Names like "Mc Cune" must
-        # be searched with the space. (Queued as a circle-back item.)
         where_clauses = [
             "upper(d_last_name) = '" + last.replace("'", "''") + "'"
         ]
-        # First-name prefix filter: narrows 50-row page to actual candidates.
-        # Use first 3 chars as prefix for typo tolerance — 'NORMAN' and 'NORMAL'
-        # both start with 'NOR', so fuzzy scoring still catches the typo after
-        # this prefilter. Short names (<3 chars) use the full name.
         if first:
             fprefix = first[:3] if len(first) >= 3 else first
             where_clauses.append(
@@ -278,7 +264,6 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
             "User-Agent": "MemoryWatch-NGL/1.0",
             "Accept": "application/json"
         })
-        # Fetch with one retry on timeout (VA API / Render cold start can be slow)
         raw = None
         last_err = None
         for attempt in range(2):
@@ -293,23 +278,13 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         if raw is None:
             raise last_err if last_err else Exception("NGL fetch failed")
 
-        # Multi-factor scoring for ranking candidates.
-        # Base score from first-name match, then additive boosts for veteran
-        # status, middle-name match, birth-year match, suffix match.
-        # Caps at 1.0. Min threshold 0.75 to be included at all.
-        suffix_in = (middle_name or "").strip()  # placeholder; real suffix below
-        # (We accept suffix via the route, but the /admin/test-ngl route doesn't
-        #  pass it — only /ngl/search and /ngl/proxy do. Keep compatible.)
         scored = []
         for rec in raw:
             cand_first = str(rec.get("d_first_name") or "").strip()
             base_score = fuzzy_first_name_score(first, cand_first) if first else 0.5
-            # 0.75 catches Normal/Norman (~0.83) but rejects random matches
             if first and base_score < 0.75:
                 continue
 
-            # Middle-name gate: if user provided a middle, record's middle must
-            # match (exact or prefix). Reject otherwise. Also compute boost.
             mid_boost = 0.0
             if mid:
                 cand_mid = str(rec.get("d_mid_name") or "").strip().upper().rstrip(".")
@@ -322,28 +297,22 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
                 else:
                     continue
 
-            # Veteran status boost — "Veteran (Self)" outranks spouse/child/etc.
             rel = str(rec.get("relationship") or "").lower()
             vet_boost = 0.10 if ("self" in rel or rel.strip() == "veteran") else 0.0
 
-            # Birth year boost — only if user provided one
             byear_boost = 0.0
             if birth_year and birth_year.strip():
                 cand_dob = str(rec.get("d_birth_date") or "")
                 if birth_year.strip() in cand_dob:
                     byear_boost = 0.10
 
-            # Final score, capped at 1.0
             score = min(1.0, base_score + vet_boost + mid_boost + byear_boost)
             scored.append((score, rec))
 
-        # Sort by: score desc, then veteran status desc, then death date desc,
-        # then alphabetical last/first.
         def sort_key(item):
             s, r = item
             rel = str(r.get("relationship") or "").lower()
             is_vet = 1 if ("self" in rel or rel.strip() == "veteran") else 0
-            # Death date as a sortable string — VA stores M/D/YYYY, convert to YYYYMMDD-ish
             dod = str(r.get("d_death_date") or "")
             dod_key = ""
             try:
@@ -422,7 +391,139 @@ def run_ngl_query(first_name: str = None, last_name: str = None,
         print("[ngl] Search error: " + str(e))
         return {"results": [], "count": 0, "has_more": False, "offset": offset, "error": str(e)}
 
-# ───────────────────────────────────────────────────────────────────────────────
+# -- VLM (Veterans Legacy Memorial) lookup + parse ------------------------------
+# VLM's /search page is a React SPA (no server-side rendering of search
+# results), so we can't scrape it directly. But VLM's detail pages DO render
+# server-side for crawlers. Detail URLs have an unpredictable 5-7 char hash
+# (/NAMEINCAPS/HASH), so we can't construct them from a name alone.
+# Solution: use DuckDuckGo HTML search (no API key required) to discover the
+# detail URL by name, then fetch and parse it.
+
+def ddg_find_vlm_url(first_name: str, last_name: str, birth_year: str = None) -> str:
+    """Find the VLM detail URL for a veteran via DuckDuckGo site-search.
+    Returns URL string or empty string if not found."""
+    try:
+        name_parts = []
+        if first_name and first_name.strip():
+            name_parts.append(first_name.strip())
+        if last_name and last_name.strip():
+            name_parts.append(last_name.strip())
+        if not name_parts:
+            return ""
+        query = 'site:vlm.cem.va.gov "' + " ".join(name_parts) + '"'
+        if birth_year and birth_year.strip():
+            query += " " + birth_year.strip()
+
+        ddg_url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+        req = urllib.request.Request(ddg_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml"
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        pattern = r'https?://(?:www\.)?vlm\.cem\.va\.gov/([A-Z][A-Z0-9]+)/([A-F0-9]+)'
+        matches = re.findall(pattern, html)
+        if not matches:
+            matches = re.findall(pattern, urllib.parse.unquote(html))
+        if not matches:
+            print("[vlm] ddg found no VLM URL for: " + query)
+            return ""
+        name_slug, url_hash = matches[0]
+        return "https://www.vlm.cem.va.gov/" + name_slug + "/" + url_hash
+    except Exception as e:
+        print("[vlm] ddg lookup error: " + str(e))
+        return ""
+
+
+def parse_vlm_page(html: str) -> dict:
+    """Extract structured fields from a VLM detail page's HTML.
+    All fields may be None if not detected."""
+    result = {
+        "full_name": None, "dates": None, "emblem": None,
+        "branch": None, "rank": None, "war": None,
+        "cemetery": None, "address": None, "phone": None,
+        "section": None, "interment_date": None,
+        "tributes_count": 0, "mementos_count": 0, "docs_count": 0
+    }
+    try:
+        t = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+        t = re.sub(r'<style[^>]*>.*?</style>', ' ', t, flags=re.DOTALL | re.IGNORECASE)
+
+        m = re.search(r"<h1[^>]*>\s*([A-Z][A-Z'\s\-\.]{2,})\s*</h1>", t)
+        if m:
+            result["full_name"] = re.sub(r'\s+', ' ', m.group(1)).strip()
+
+        month_pat = r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?'
+        date_pat = r'(' + month_pat + r'\s+\d{1,2},?\s+\d{4})\s*[-\u2013\u2014]\s*(' + month_pat + r'\s+\d{1,2},?\s+\d{4})'
+        m = re.search(date_pat, t)
+        if m:
+            result["dates"] = m.group(1).strip() + " - " + m.group(2).strip()
+
+        m = re.search(r'alt="([A-Z][A-Z\s\(\)\-\']*(?:CROSS|STAR|EMBLEM|BELIEF|FAITH|WHEEL|CRESCENT|MENORAH|LOTUS|DHARMA)[A-Z\s\(\)\-\']*)"', t)
+        if m:
+            result["emblem"] = m.group(1).strip()
+
+        plain = re.sub(r'<[^>]+>', ' ', t)
+        plain = re.sub(r'&nbsp;', ' ', plain)
+        plain = re.sub(r'&amp;', '&', plain)
+        plain = re.sub(r'\s+', ' ', plain).strip()
+
+        srv = re.search(r'\bService\b\s+(.{1,400}?)(?:Resting Place|Mementos|Tributes|Historical)', plain, re.IGNORECASE)
+        if srv:
+            s = srv.group(1)
+            war_m = re.search(r'\b(WORLD WAR I{1,2}|KOREA|VIETNAM|GULF WAR|AFGHANISTAN|IRAQ|DESERT STORM|PEACETIME|OPERATION [A-Z ]+?)\b', s)
+            if war_m:
+                result["war"] = war_m.group(1).title().replace('Ii', 'II')
+            br_m = re.search(r'\bUS\s+(ARMY|NAVY|MARINE CORPS|AIR FORCE|COAST GUARD|SPACE FORCE)\b', s)
+            if br_m:
+                result["branch"] = "US " + br_m.group(1).title()
+            rk_m = re.search(r'\b([A-Z]{2,5})\b\s+SERVICE BRANCH', s)
+            if not rk_m:
+                rk_m = re.search(r'US\s+(?:ARMY|NAVY|MARINE CORPS|AIR FORCE|COAST GUARD|SPACE FORCE)[,\s]+([A-Z]{2,5})\b', s)
+            if rk_m:
+                result["rank"] = rk_m.group(1)
+
+        rest = re.search(r'\bResting Place\b\s+(.{1,800}?)(?:Mementos|Tributes|Historical|$)', plain, re.IGNORECASE)
+        if rest:
+            r_ = rest.group(1)
+            cem_m = re.search(r'(NATIONAL [A-Z][A-Z\s]+CEMETERY(?:\s+(?:OF|AT|IN)\s+[A-Z][A-Z\s]+?)?)\b', r_)
+            if cem_m:
+                cem = cem_m.group(1).title()
+                cem = cem.replace(' Of ', ' of ').replace(' At ', ' at ').replace(' In ', ' in ')
+                result["cemetery"] = cem.strip()
+            addr_m = re.search(r'(\d+\s+[A-Z][A-Z0-9\s]+(?:DRIVE|DR|ROAD|RD|STREET|ST|AVENUE|AVE|LANE|LN|BLVD|BOULEVARD|HIGHWAY|HWY|WAY|PLACE|PL)[A-Z\s,]*\d{5})', r_)
+            if addr_m:
+                result["address"] = re.sub(r'\s+', ' ', addr_m.group(1)).strip()
+            ph_m = re.search(r'(\d{3}[-\.\s]\d{3}[-\.\s]\d{4})', r_)
+            if ph_m:
+                result["phone"] = re.sub(r'[\.\s]', '-', ph_m.group(1))
+            sec_m = re.search(r'(SECTION\s+[A-Z0-9]+,?\s*ROW\s+\d+,?\s*SITE\s+[A-Z0-9\-]+)', r_, re.IGNORECASE)
+            if sec_m:
+                result["section"] = re.sub(r'\s+', ' ', sec_m.group(1)).strip().upper()
+            months_full = r'January|February|March|April|May|June|July|August|September|October|November|December'
+            intr_m = re.search(r'((?:' + months_full + r')\s+\d{1,2},\s+\d{4})\s*DATE OF INTERMENT', r_, re.IGNORECASE)
+            if intr_m:
+                result["interment_date"] = intr_m.group(1).strip()
+
+        tr_m = re.search(r'Tributes\s*\((\d+)\)', plain)
+        if tr_m:
+            result["tributes_count"] = int(tr_m.group(1))
+        mm_m = re.search(r'Mementos\s*\((\d+)\)', plain)
+        if mm_m:
+            result["mementos_count"] = int(mm_m.group(1))
+        dc_m = re.search(r'Historical Docs?\s*\((\d+)\)', plain)
+        if dc_m:
+            result["docs_count"] = int(dc_m.group(1))
+
+        return result
+    except Exception as e:
+        print("[vlm] parse error: " + str(e))
+        return result
+
+# -- end VLM lookup -------------------------------------------------------------
 
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
@@ -836,7 +937,7 @@ class ObituaryResult(BaseModel):
     obit_text: Optional[str]
     confidence: str
 
-app = FastAPI(title="Memory Watch API", version="1.5.24")
+app = FastAPI(title="Memory Watch API", version="1.5.25")
 
 app.add_middleware(
     CORSMiddleware,
@@ -903,9 +1004,9 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.5.24"
+        "version": "1.5.25"
     }
-    
+
 @app.get("/admin/delete-user")
 async def admin_delete_user(email: str):
     with get_db() as conn:
@@ -920,7 +1021,7 @@ async def admin_delete_user(email: str):
         c.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
         return {"deleted": True, "email": email}
-        
+
 @app.get("/admin/stats")
 async def get_stats():
     with get_db() as conn:
@@ -999,6 +1100,26 @@ async def test_ssdi(name: str):
 async def test_ngl(last_name: str, first_name: str = None):
     """Quick NGL smoke test. e.g. /admin/test-ngl/Steele?first_name=Billy"""
     return run_ngl_query(first_name=first_name, last_name=last_name)
+
+@app.get("/admin/test-vlm/{last_name}")
+async def test_vlm(last_name: str, first_name: str = None, birth_year: str = None):
+    """Quick VLM smoke test. e.g. /admin/test-vlm/Okada?first_name=Howard"""
+    url = ddg_find_vlm_url(first_name or "", last_name, birth_year)
+    if not url:
+        return {"found": False, "error": "no VLM page found via search"}
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; MemoryWatch-VLM/1.0)",
+            "Accept": "text/html"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        parsed = parse_vlm_page(html)
+        parsed["found"] = True
+        parsed["vlm_url"] = url
+        return parsed
+    except Exception as e:
+        return {"found": False, "vlm_url": url, "error": str(e)}
 
 @app.post("/auth/register", response_model=Token)
 async def register(user: UserCreate):
@@ -1224,7 +1345,7 @@ async def ssdi_search(
     offset: int = 0,
     user_id: int = Depends(get_current_user)
 ):
-    """Authenticated SSDI search — for DORA and MW apps."""
+    """Authenticated SSDI search -- for DORA and MW apps."""
     return run_ssdi_query(name, birth_year, middle_name, suffix, offset)
 
 @app.get("/ssdi/proxy")
@@ -1235,7 +1356,7 @@ async def ssdi_proxy(
     suffix: str = None,
     offset: int = 0
 ):
-    """Unauthenticated SSDI proxy — for NYT tester and future verticals."""
+    """Unauthenticated SSDI proxy -- for NYT tester and future verticals."""
     return run_ssdi_query(name, birth_year, middle_name, suffix, offset)
 
 @app.get("/ngl/search")
@@ -1247,7 +1368,7 @@ async def ngl_search(
     offset: int = 0,
     user_id: int = Depends(get_current_user)
 ):
-    """Authenticated NGL (VA Gravesite Locator) search — for DORA and MW apps."""
+    """Authenticated NGL search -- for DORA and MW apps."""
     return run_ngl_query(first_name, last_name, middle_name, birth_year, offset)
 
 @app.get("/ngl/proxy")
@@ -1258,8 +1379,39 @@ async def ngl_proxy(
     birth_year: str = None,
     offset: int = 0
 ):
-    """Unauthenticated NGL proxy — for NGL tester and future verticals."""
+    """Unauthenticated NGL proxy -- for NGL tester and future verticals."""
     return run_ngl_query(first_name, last_name, middle_name, birth_year, offset)
+
+@app.get("/vlm/fetch")
+async def vlm_fetch(first_name: str = None, last_name: str = None, birth_year: str = None):
+    """Find + fetch VLM detail page for a veteran. Returns parsed fields
+    (or {found: false, ...} if no matching VLM page exists).
+
+    Called by the VA Gravesite Tester frontend at Save-to-Memories time,
+    so the memory drawer can show NGL and VLM data side by side.
+    """
+    if not last_name or not last_name.strip():
+        return {"found": False, "error": "last_name required"}
+
+    vlm_url = ddg_find_vlm_url(first_name or "", last_name, birth_year)
+    if not vlm_url:
+        return {"found": False, "vlm_url": "", "error": "no VLM page found via search"}
+
+    try:
+        req = urllib.request.Request(vlm_url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; MemoryWatch-VLM/1.0; +https://memorywatch.app)",
+            "Accept": "text/html,application/xhtml+xml"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        parsed = parse_vlm_page(html)
+        parsed["found"] = True
+        parsed["vlm_url"] = vlm_url
+        print("[vlm] fetched " + vlm_url + " name=" + str(parsed.get("full_name")) + " cem=" + str(parsed.get("cemetery")))
+        return parsed
+    except Exception as e:
+        print("[vlm] fetch error for " + vlm_url + ": " + str(e))
+        return {"found": False, "vlm_url": vlm_url, "error": str(e)}
 
 @app.get("/legacy/search")
 async def legacy_search(name: str, user_id: int = Depends(get_current_user)):
